@@ -1,0 +1,35 @@
+{
+  "name": "maestro-desktop",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Central desktop local-first para agentes de IA",
+  "license": "MIT",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build:packages": "pnpm --filter @maestro/contracts build && pnpm --filter @maestro/core build && pnpm --filter @maestro/database build",
+    "dev": "pnpm run build:packages && pnpm --filter @maestro/desktop dev",
+    "build": "pnpm run build:packages && pnpm --filter @maestro/desktop build",
+    "typecheck": "pnpm --filter @maestro/contracts typecheck && pnpm --filter @maestro/core typecheck && pnpm --filter @maestro/database typecheck && pnpm --filter @maestro/desktop typecheck",
+    "test": "pnpm run build:packages && pnpm --filter @maestro/core test && pnpm --filter @maestro/database test && pnpm --filter @maestro/desktop test",
+    "test:e2e": "pnpm build && pnpm --filter @maestro/desktop test:e2e",
+    "test:watch": "pnpm -r --parallel test:watch",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "package:linux": "pnpm run build:packages && pnpm --filter @maestro/desktop package:linux",
+    "package:linux:beta": "pnpm run build:packages && pnpm --filter @maestro/desktop package:linux:beta",
+    "package:windows": "pnpm run build:packages && pnpm --filter @maestro/desktop package:windows",
+    "package:windows:beta": "pnpm run build:packages && pnpm --filter @maestro/desktop package:windows:beta"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^24.10.0",
+    "eslint": "^9.39.2",
+    "prettier": "^3.9.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.65.0"
+  }
+}

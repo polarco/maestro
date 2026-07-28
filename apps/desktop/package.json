@@ -1,0 +1,131 @@
+{
+  "name": "@maestro/desktop",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Central desktop local-first para coordenar agentes de IA",
+  "homepage": "https://github.com/polarco/maestro#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/polarco/maestro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/polarco/maestro/issues"
+  },
+  "desktopName": "Maestro.desktop",
+  "author": {
+    "name": "Maestro Contributors",
+    "email": "maestro-maintainers@users.noreply.github.com"
+  },
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "generate:codex-schema": "node scripts/generate-codex-schema.mjs",
+    "package:linux": "electron-vite build && electron-builder --linux AppImage deb --config.publish.channel=latest --publish never",
+    "package:linux:beta": "electron-vite build && electron-builder --linux AppImage deb --config.publish.channel=beta --publish never",
+    "package:windows": "electron-vite build && electron-builder --win nsis portable --config.publish.channel=latest --publish never",
+    "package:windows:beta": "electron-vite build && electron-builder --win nsis portable --config.publish.channel=beta --publish never"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.1",
+    "electron-updater": "^6.8.9",
+    "node-pty": "^1.1.0",
+    "ulid": "^3.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@maestro/contracts": "workspace:*",
+    "@maestro/core": "workspace:*",
+    "@maestro/database": "workspace:*",
+    "@playwright/test": "^1.62.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-query": "^5.101.4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.4.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "lucide-react": "^1.27.0",
+    "motion": "^12.42.2",
+    "radix-ui": "^1.6.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.6.0",
+    "typescript": "5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10",
+    "zustand": "^5.0.14"
+  },
+  "build": {
+    "appId": "dev.maestro.desktop",
+    "productName": "Maestro",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/**/*.node",
+      "node_modules/node-pty/prebuilds/**/spawn-helper",
+      "node_modules/node-pty/prebuilds/win32-*/winpty-*"
+    ],
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "../../release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "polarco",
+      "repo": "maestro",
+      "channel": "latest"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "synopsis": "Central desktop de agentes de IA",
+      "executableName": "maestro",
+      "icon": "build/icon.svg",
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.svg"
+    },
+    "deb": {
+      "packageCategory": "devel"
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-windows-${arch}-portable.${ext}"
+    }
+  }
+}

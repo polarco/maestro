@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+release/
+coverage/
+.vite/
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+apps/desktop/src/main/providers/generated/
+playwright-report/
+test-results/

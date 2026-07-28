@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Linux runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libsecret-1-dev
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit and integration tests
+        run: pnpm test
+
+      - name: Electron end-to-end test
+        run: pnpm test:e2e
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: pnpm package:linux
+
+      - name: Smoke-test packaged Linux app
+        if: runner.os == 'Linux'
+        run: pnpm --filter @maestro/desktop smoke:packaged
+        env:
+          MAESTRO_SMOKE_EXECUTABLE: ${{ github.workspace }}/release/linux-unpacked/maestro
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: pnpm package:windows
+
+      - name: Smoke-test packaged Windows app
+        if: runner.os == 'Windows'
+        run: pnpm --filter @maestro/desktop smoke:packaged
+        env:
+          MAESTRO_SMOKE_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Maestro.exe
+
+      - name: Upload Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-linux
+          path: |
+            release/Maestro-*-linux-*.AppImage
+            release/Maestro-*-linux-*.deb
+          if-no-files-found: error
+
+      - name: Upload Windows packages
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-windows
+          path: release/Maestro-*-windows-*.exe
+          if-no-files-found: error

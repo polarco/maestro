@@ -1,0 +1,76 @@
+{
+  "$schema": "https://21st.dev/schemas/design-context.json",
+  "name": "Maestro Desktop",
+  "product": {
+    "summary": "Central desktop local-first para planejar, executar e acompanhar agentes de IA em workspaces selecionados.",
+    "audience": "Desenvolvedores que precisam coordenar agentes com segurança e transparência.",
+    "language": ["pt-BR", "en"]
+  },
+  "stack": {
+    "framework": "React 19 + TypeScript",
+    "desktop": "Electron",
+    "styling": "Tailwind CSS",
+    "primitives": "Radix UI / shadcn-ui",
+    "icons": "Lucide React",
+    "motion": "Motion",
+    "charts": "Recharts"
+  },
+  "visualDirection": {
+    "name": "Focused operations console",
+    "principles": [
+      "dense enough for professional agent operations without feeling like a monitoring wall",
+      "warm neutral surfaces with restrained indigo and cyan status accents",
+      "strong information hierarchy, quiet borders, and clear progressive disclosure",
+      "no decorative gradients, glassmorphism, or oversized marketing typography"
+    ],
+    "references": [
+      "AI Agent Pipeline",
+      "AI Routing Indicator",
+      "Progress Tracker",
+      "Subagent Tool",
+      "Tool Calls Section",
+      "Agent Chat"
+    ]
+  },
+  "tokens": {
+    "color": {
+      "background": "#0b0d12",
+      "surface": "#11141b",
+      "surfaceRaised": "#171b24",
+      "border": "#272c38",
+      "text": "#f3f4f6",
+      "textMuted": "#949baa",
+      "primary": "#8b87ff",
+      "primaryStrong": "#706cf6",
+      "success": "#43c59e",
+      "warning": "#e8ad55",
+      "danger": "#ef6a7a",
+      "info": "#59b8e8"
+    },
+    "radius": {
+      "sm": "6px",
+      "md": "10px",
+      "lg": "14px"
+    },
+    "type": {
+      "sans": "Inter Variable, Inter, ui-sans-serif, system-ui",
+      "mono": "JetBrains Mono, ui-monospace, SFMono-Regular, monospace"
+    },
+    "spacing": "4px base grid"
+  },
+  "accessibility": {
+    "target": "WCAG 2.2 AA",
+    "minimumContrast": 4.5,
+    "keyboard": "All actions and panes operable by keyboard with visible focus rings",
+    "motion": "Respect prefers-reduced-motion",
+    "status": "Never communicate run state through color alone",
+    "density": "Primary controls remain at least 36px high and icon-only controls have accessible names"
+  },
+  "constraints": [
+    "Desktop-first at 1024px and above, with graceful compact layout down to 800px",
+    "Use real data states: empty, loading, error, offline, awaiting approval, active, canceled, complete",
+    "Structured sessions and PTY sessions must remain visually distinct",
+    "Plan approval and destructive boundaries must be explicit",
+    "Do not expose chain-of-thought; show concise rationale and structured analysis only"
+  ]
+}

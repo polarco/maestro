@@ -1,0 +1,4 @@
+-- The executable source of this migration lives in src/migration.ts so it can
+-- be bundled into Electron. This marker is kept for Drizzle tooling and audits.
+-- Version: 1 — projects, roots, conversations, messages, runs, plans, tasks,
+-- append-only run_events, settings, provider configs and encrypted secrets.
