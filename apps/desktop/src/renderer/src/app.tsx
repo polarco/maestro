@@ -280,6 +280,8 @@ export default function App() {
           onOpenCommand={() => setCommandOpen(true)}
           onProjectChange={(id) => void changeProject(id)}
           onNewConversation={() => void newConversation()}
+          onBootstrap={setBootstrap}
+          onError={setActionError}
         />
         <main className="min-w-0 flex-1 bg-bg/40">{content}</main>
       </div>

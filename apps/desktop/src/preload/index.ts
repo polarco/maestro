@@ -9,13 +9,20 @@ const api: MaestroDesktopApi = {
   createProject: (input) => ipcRenderer.invoke(IPC_CHANNELS.projectCreate, input),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.projectList),
   selectProject: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectSelect, projectId),
+  updateProject: (input) => ipcRenderer.invoke(IPC_CHANNELS.projectUpdate, input),
+  deleteProject: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectDelete, projectId),
   addProjectRoot: (projectId, directory) =>
     ipcRenderer.invoke(IPC_CHANNELS.projectAddRoot, projectId, directory),
+  removeProjectRoot: (projectId, workspaceRootId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.projectRemoveRoot, projectId, workspaceRootId),
   createConversation: (input) => ipcRenderer.invoke(IPC_CHANNELS.conversationCreate, input),
   listConversations: (projectId, limit) =>
     ipcRenderer.invoke(IPC_CHANNELS.conversationList, projectId, limit),
   getConversation: (conversationId) =>
     ipcRenderer.invoke(IPC_CHANNELS.conversationGet, conversationId),
+  updateConversation: (input) => ipcRenderer.invoke(IPC_CHANNELS.conversationUpdate, input),
+  deleteConversation: (conversationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.conversationDelete, conversationId),
   sendMessage: (input) => ipcRenderer.invoke(IPC_CHANNELS.messageSend, input),
   getRun: (runId) => ipcRenderer.invoke(IPC_CHANNELS.runGet, runId),
   getRunEvents: (runId, afterSequence, limit) =>

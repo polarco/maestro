@@ -19,10 +19,13 @@ import {
   type ProviderConnectionSummary,
   type RunDetail,
   type RunEvent,
+  type RunState,
   type SendMessageInput,
   type SendMessageResult,
   type TerminalEvent,
   type TerminalSessionDto,
+  type UpdateConversationInput,
+  type UpdateProjectInput,
   type UpdateProviderConnectionInput,
   type UpdateState,
   type VaultStatus,
@@ -40,6 +43,16 @@ interface Grant {
   path: string;
   expiresAt: number;
 }
+
+const ACTIVE_RUN_STATES = [
+  "analyzing",
+  "planning",
+  "awaiting_approval",
+  "queued",
+  "running",
+  "validating",
+  "integrating",
+] as const satisfies readonly RunState[];
 
 export class ApplicationService {
   readonly repository: MaestroRepository;
@@ -111,15 +124,7 @@ export class ApplicationService {
       activeProjectId
         ? this.repository.listRuns({
             projectId: activeProjectId,
-            states: [
-              "analyzing",
-              "planning",
-              "awaiting_approval",
-              "queued",
-              "running",
-              "validating",
-              "integrating",
-            ],
+            states: [...ACTIVE_RUN_STATES],
           })
         : Promise.resolve([]),
       this.repository.getSettings(),
@@ -197,6 +202,31 @@ export class ApplicationService {
     return this.bootstrap(projectId);
   }
 
+  updateProject(input: UpdateProjectInput): Promise<Project> {
+    return this.repository.updateProject(input.projectId, input.name.trim());
+  }
+
+  async deleteProject(projectId: string): Promise<BootstrapPayload> {
+    const runs = await this.repository.listRuns({ projectId, states: [...ACTIVE_RUN_STATES] });
+    if (
+      runs.length > 0 ||
+      this.orchestration.hasActiveProject(projectId) ||
+      this.terminal.hasProjectSession(projectId)
+    )
+      throw new MaestroError(
+        "PROJECT_IN_USE",
+        "O projeto possui execuções ou terminais ativos. Encerre-os antes de excluir o projeto.",
+        { recoverable: true },
+      );
+    const activeProjectId = await this.repository.getActiveProjectId();
+    await this.repository.deleteProject(projectId);
+    const remaining = await this.repository.listProjects();
+    const nextProjectId =
+      activeProjectId === projectId ? (remaining[0]?.id ?? null) : activeProjectId;
+    if (nextProjectId) await this.repository.selectProject(nextProjectId);
+    return this.bootstrap(nextProjectId);
+  }
+
   async addProjectRoot(projectId: string, directory: string): Promise<Project> {
     const canonicalPath = await canonicalizeDirectory(directory);
     this.#consume(
@@ -209,6 +239,32 @@ export class ApplicationService {
       canonicalPath,
       displayName: path.basename(canonicalPath),
     });
+  }
+
+  async removeProjectRoot(projectId: string, workspaceRootId: string): Promise<Project> {
+    const root = await this.repository.getWorkspaceRoot(workspaceRootId);
+    if (root.projectId !== projectId)
+      throw new MaestroError(
+        "WORKSPACE_PROJECT_MISMATCH",
+        "A raiz não pertence ao projeto selecionado.",
+      );
+    const activeRuns = await this.repository.listRuns({
+      projectId,
+      states: [...ACTIVE_RUN_STATES],
+    });
+    if (activeRuns.some((run) => run.spec.workspaceRootIds.includes(workspaceRootId)))
+      throw new MaestroError(
+        "WORKSPACE_ROOT_IN_USE",
+        "Esta pasta está sendo usada por uma execução ativa.",
+        { recoverable: true },
+      );
+    if (this.terminal.hasWorkspaceRootSession(workspaceRootId))
+      throw new MaestroError(
+        "WORKSPACE_ROOT_IN_USE",
+        "Encerre o terminal aberto nesta pasta antes de removê-la do projeto.",
+        { recoverable: true },
+      );
+    return this.repository.removeWorkspaceRoot(projectId, workspaceRootId);
   }
 
   createConversation(input: CreateConversationInput): Promise<Conversation> {
@@ -232,6 +288,24 @@ export class ApplicationService {
       this.repository.listRuns({ conversationId }),
     ]);
     return { conversation, messages, runs };
+  }
+
+  updateConversation(input: UpdateConversationInput): Promise<Conversation> {
+    return this.repository.updateConversation(input.conversationId, { title: input.title.trim() });
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    const runs = await this.repository.listRuns({
+      conversationId,
+      states: [...ACTIVE_RUN_STATES],
+    });
+    if (runs.length > 0 || this.orchestration.hasActiveConversation(conversationId))
+      throw new MaestroError(
+        "CONVERSATION_HAS_ACTIVE_RUNS",
+        "A conversa possui uma execução ativa. Cancele ou aguarde a conclusão antes de excluí-la.",
+        { recoverable: true },
+      );
+    await this.repository.deleteConversation(conversationId);
   }
 
   async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {

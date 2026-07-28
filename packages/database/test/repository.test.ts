@@ -93,6 +93,84 @@ describe("MaestroRepository", () => {
     db.close();
   });
 
+  it("updates and removes projects, roots and conversations as one data graph", async () => {
+    const db = await repository();
+    const project = await db.createProject({
+      name: "Antes",
+      path: "/workspace/one",
+      canonicalPath: "/workspace/one",
+      displayName: "one",
+    });
+    const renamed = await db.updateProject(project.id, "Depois");
+    expect(renamed.name).toBe("Depois");
+
+    const withSecondRoot = await db.addWorkspaceRoot(project.id, {
+      path: "/workspace/two",
+      canonicalPath: "/workspace/two",
+      displayName: "two",
+    });
+    expect(withSecondRoot.roots).toHaveLength(2);
+    await db.removeWorkspaceRoot(project.id, withSecondRoot.roots[1]!.id);
+    await expect(db.removeWorkspaceRoot(project.id, project.roots[0]!.id)).rejects.toThrow(
+      "pelo menos uma pasta",
+    );
+
+    const conversation = await db.createConversation({
+      projectId: project.id,
+      title: "Rascunho",
+      mode: "chat",
+      sessionKind: "structured",
+      workspaceRootId: project.roots[0]!.id,
+    });
+    expect((await db.updateConversation(conversation.id, { title: "Final" })).title).toBe("Final");
+
+    const spec: RunSpec = {
+      id: "run-delete-graph",
+      mode: "chat",
+      projectId: project.id,
+      conversationId: conversation.id,
+      workspaceRootIds: [project.roots[0]!.id],
+      prompt: "teste",
+      requestedModel: null,
+      roleModels: {},
+      permissions: {
+        readWorkspace: true,
+        writeWorkspace: false,
+        runCommands: false,
+        network: false,
+        allowedCommands: [],
+        deniedCommands: [],
+      },
+      budget: { maxTokens: null, maxCostUsd: null, maxDurationMinutes: 10, maxTurns: 2 },
+      concurrency: 1,
+      createdAt: new Date().toISOString(),
+    };
+    await db.createRun(spec, "completed");
+    await db.appendEvent({
+      runId: spec.id,
+      type: "run.created",
+      data: { mode: "chat", promptPreview: "teste" },
+    });
+
+    await db.deleteConversation(conversation.id);
+    await expect(db.getConversation(conversation.id)).rejects.toThrow("não encontrada");
+    expect(
+      db.sqlite.prepare("SELECT COUNT(*) AS count FROM runs WHERE id = ?").get(spec.id),
+    ).toEqual({
+      count: 0,
+    });
+    expect(
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get("run_events_no_delete"),
+    ).toEqual({ name: "run_events_no_delete" });
+
+    await db.deleteProject(project.id);
+    expect(await db.listProjects()).toEqual([]);
+    expect(await db.getActiveProjectId()).toBeNull();
+    db.close();
+  });
+
   it("keeps run_events append-only with monotonic sequences", async () => {
     const db = await repository();
     const project = await db.createProject({

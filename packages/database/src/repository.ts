@@ -154,6 +154,42 @@ export class MaestroRepository {
     return this.getProject(projectId);
   }
 
+  async updateProject(projectId: string, name: string): Promise<Project> {
+    await this.requireProject(projectId);
+    await this.db
+      .update(projects)
+      .set({ name, updatedAt: now() })
+      .where(eq(projects.id, projectId));
+    return this.getProject(projectId);
+  }
+
+  async removeWorkspaceRoot(projectId: string, rootId: string): Promise<Project> {
+    const project = await this.getProject(projectId);
+    const root = project.roots.find((candidate) => candidate.id === rootId);
+    if (!root)
+      throw new MaestroError(
+        "WORKSPACE_PROJECT_MISMATCH",
+        "A raiz não pertence ao projeto selecionado.",
+      );
+    if (project.roots.length <= 1)
+      throw new MaestroError(
+        "PROJECT_REQUIRES_ROOT",
+        "Um projeto precisa manter pelo menos uma pasta autorizada.",
+        { recoverable: true },
+      );
+    await this.db.delete(workspaceRoots).where(eq(workspaceRoots.id, rootId));
+    await this.db.update(projects).set({ updatedAt: now() }).where(eq(projects.id, projectId));
+    return this.getProject(projectId);
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    await this.requireProject(projectId);
+    this.deleteWithRunEventCascade("projects", projectId);
+    await this.db
+      .delete(appMetadata)
+      .where(and(eq(appMetadata.key, "active_project_id"), eq(appMetadata.value, projectId)));
+  }
+
   async listProjects(): Promise<Project[]> {
     const rows = await this.db.select().from(projects).orderBy(desc(projects.lastOpenedAt));
     if (rows.length === 0) return [];
@@ -276,6 +312,26 @@ export class MaestroRepository {
       .set({ ...values, updatedAt: now() })
       .where(eq(conversations.id, conversationId));
     return this.getConversation(conversationId);
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    await this.getConversation(conversationId);
+    this.deleteWithRunEventCascade("conversations", conversationId);
+  }
+
+  private deleteWithRunEventCascade(table: "projects" | "conversations", id: string): void {
+    this.sqlite.transaction(() => {
+      // Run events remain append-only during normal operation. A confirmed parent
+      // deletion is the sole exception and removes the complete related graph.
+      this.sqlite.exec("DROP TRIGGER IF EXISTS run_events_no_delete");
+      this.sqlite.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+      this.sqlite.exec(`
+        CREATE TRIGGER run_events_no_delete
+        BEFORE DELETE ON run_events BEGIN
+          SELECT RAISE(ABORT, 'run_events is append-only');
+        END;
+      `);
+    })();
   }
 
   async getConversation(conversationId: string): Promise<Conversation> {

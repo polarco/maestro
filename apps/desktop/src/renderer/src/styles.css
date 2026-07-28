@@ -388,6 +388,109 @@ select option {
   backdrop-filter: blur(16px);
 }
 
+.action-menu-content {
+  z-index: 140;
+  min-width: 196px;
+  max-width: min(280px, calc(100vw - 20px));
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 12px;
+  padding: 5px;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-surface-raised) 98%, transparent);
+  box-shadow: 0 18px 45px -16px rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(14px);
+  transform-origin: var(
+    --radix-dropdown-menu-content-transform-origin,
+    var(--radix-context-menu-content-transform-origin)
+  );
+  animation: menu-enter 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.action-menu-item {
+  display: flex;
+  min-height: 34px;
+  cursor: default;
+  user-select: none;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  outline: none;
+}
+
+.action-menu-item[data-highlighted] {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.action-menu-item[data-disabled] {
+  opacity: 0.4;
+}
+
+.action-menu-item-danger {
+  color: var(--color-danger);
+}
+
+.action-menu-item-danger[data-highlighted] {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+}
+
+.action-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--color-border);
+}
+
+.action-menu-shortcut {
+  margin-left: 12px;
+  color: var(--color-text-faint);
+  font-size: 9px;
+}
+
+.tooltip-content {
+  z-index: 170;
+  max-width: 280px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  box-shadow: 0 12px 30px -12px rgb(0 0 0 / 0.52);
+  font-size: 10.5px;
+  line-height: 1.45;
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+  animation: tooltip-enter 110ms ease-out;
+}
+
+.modal-overlay {
+  position: fixed;
+  z-index: 150;
+  inset: 0;
+  background: rgb(12 11 9 / 0.68);
+  backdrop-filter: blur(6px);
+  animation: fade-enter 140ms ease-out;
+}
+
+.modal-content {
+  position: fixed;
+  z-index: 151;
+  top: 50%;
+  left: 50%;
+  width: calc(100vw - 32px);
+  max-height: min(720px, calc(100vh - 40px));
+  overflow-y: auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 16px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 28px 80px -24px rgb(0 0 0 / 0.72);
+  transform: translate(-50%, -50%);
+  animation: modal-enter 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .composer-card {
   border: 1px solid var(--color-border-strong);
   border-radius: 18px;
@@ -420,6 +523,33 @@ select option {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes menu-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+}
+
+@keyframes tooltip-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes fade-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 7px)) scale(0.985);
   }
 }
 

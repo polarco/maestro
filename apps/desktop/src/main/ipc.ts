@@ -13,6 +13,8 @@ import {
   type CreateConversationInput,
   type CreateProjectInput,
   type SendMessageInput,
+  type UpdateConversationInput,
+  type UpdateProjectInput,
   type UpdateProviderConnectionInput,
 } from "@maestro/contracts";
 import { MaestroError } from "@maestro/core";
@@ -20,6 +22,9 @@ import type { ApplicationService } from "./services/application.js";
 
 const createProjectSchema = z
   .object({ name: z.string().max(120), directory: z.string().min(1).max(8_192) })
+  .strict();
+const updateProjectSchema = z
+  .object({ projectId: entityIdSchema, name: z.string().trim().min(1).max(120) })
   .strict();
 const createConversationSchema = z
   .object({
@@ -32,6 +37,9 @@ const createConversationSchema = z
     modelId: z.string().min(1).max(200).optional(),
     workspaceRootId: entityIdSchema,
   })
+  .strict();
+const updateConversationSchema = z
+  .object({ conversationId: entityIdSchema, title: z.string().trim().min(1).max(200) })
   .strict();
 const sendMessageSchema = z
   .object({
@@ -99,11 +107,20 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
   handle(IPC_CHANNELS.projectSelect, (_event, projectId: string) =>
     application.selectProject(entityIdSchema.parse(projectId)),
   );
+  handle(IPC_CHANNELS.projectUpdate, (_event, input: UpdateProjectInput) =>
+    application.updateProject(updateProjectSchema.parse(input)),
+  );
+  handle(IPC_CHANNELS.projectDelete, (_event, projectId: string) =>
+    application.deleteProject(entityIdSchema.parse(projectId)),
+  );
   handle(IPC_CHANNELS.projectAddRoot, (_event, projectId: string, directory: string) =>
     application.addProjectRoot(
       entityIdSchema.parse(projectId),
       z.string().min(1).max(8_192).parse(directory),
     ),
+  );
+  handle(IPC_CHANNELS.projectRemoveRoot, (_event, projectId: string, rootId: string) =>
+    application.removeProjectRoot(entityIdSchema.parse(projectId), entityIdSchema.parse(rootId)),
   );
   handle(IPC_CHANNELS.conversationCreate, (_event, input: CreateConversationInput) => {
     const parsed = createConversationSchema.parse(input);
@@ -128,6 +145,12 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
   );
   handle(IPC_CHANNELS.conversationGet, (_event, conversationId: string) =>
     application.getConversation(entityIdSchema.parse(conversationId)),
+  );
+  handle(IPC_CHANNELS.conversationUpdate, (_event, input: UpdateConversationInput) =>
+    application.updateConversation(updateConversationSchema.parse(input)),
+  );
+  handle(IPC_CHANNELS.conversationDelete, (_event, conversationId: string) =>
+    application.deleteConversation(entityIdSchema.parse(conversationId)),
   );
   handle(IPC_CHANNELS.messageSend, (_event, input: SendMessageInput) => {
     const parsed = sendMessageSchema.parse(input);

@@ -205,6 +205,7 @@ export class OrchestrationService {
   readonly #chatSandbox: string;
   readonly #controllers = new Map<string, AbortController>();
   readonly #activeSessions = new Map<string, Set<ActiveProviderSession>>();
+  readonly #activeChats = new Map<string, { projectId: string; count: number }>();
 
   constructor(input: {
     repository: MaestroRepository;
@@ -265,9 +266,10 @@ export class OrchestrationService {
     });
 
     if (input.mode === "chat") {
-      void this.#runChat(updatedConversation, root, input, assistantMessage).catch((error) =>
-        this.#failMessage(assistantMessage.id, error),
-      );
+      this.#trackChat(updatedConversation);
+      void this.#runChat(updatedConversation, root, input, assistantMessage)
+        .catch((error) => this.#failMessage(assistantMessage.id, error))
+        .finally(() => this.#untrackChat(updatedConversation.id));
       return { conversation: updatedConversation, userMessage, assistantMessage, run: null };
     }
 
@@ -288,6 +290,16 @@ export class OrchestrationService {
       assistantMessage: { ...assistantMessage, runId: run.id },
       run,
     };
+  }
+
+  hasActiveConversation(conversationId: string): boolean {
+    return (this.#activeChats.get(conversationId)?.count ?? 0) > 0;
+  }
+
+  hasActiveProject(projectId: string): boolean {
+    return [...this.#activeChats.values()].some(
+      (active) => active.projectId === projectId && active.count > 0,
+    );
   }
 
   async approve(runId: string, planVersion: number): Promise<RunDetail> {
@@ -1355,6 +1367,20 @@ export class OrchestrationService {
     const sessions = this.#activeSessions.get(runId) ?? new Set<ActiveProviderSession>();
     sessions.add({ providerId, sessionId, ...(connectionId ? { connectionId } : {}) });
     this.#activeSessions.set(runId, sessions);
+  }
+
+  #trackChat(conversation: Conversation): void {
+    const active = this.#activeChats.get(conversation.id);
+    this.#activeChats.set(conversation.id, {
+      projectId: conversation.projectId,
+      count: (active?.count ?? 0) + 1,
+    });
+  }
+
+  #untrackChat(conversationId: string): void {
+    const active = this.#activeChats.get(conversationId);
+    if (!active || active.count <= 1) this.#activeChats.delete(conversationId);
+    else this.#activeChats.set(conversationId, { ...active, count: active.count - 1 });
   }
 
   #untrackSession(

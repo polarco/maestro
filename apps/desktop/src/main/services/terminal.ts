@@ -122,6 +122,16 @@ export class TerminalService {
     this.#sessions.delete(sessionId);
   }
 
+  hasProjectSession(projectId: string): boolean {
+    return [...this.#sessions.values()].some((session) => session.dto.projectId === projectId);
+  }
+
+  hasWorkspaceRootSession(workspaceRootId: string): boolean {
+    return [...this.#sessions.values()].some(
+      (session) => session.dto.workspaceRootId === workspaceRootId,
+    );
+  }
+
   dispose(): void {
     for (const session of this.#sessions.values()) session.process.kill();
     this.#sessions.clear();

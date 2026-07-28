@@ -68,6 +68,11 @@ export interface CreateProjectInput {
   directory: string;
 }
 
+export interface UpdateProjectInput {
+  projectId: string;
+  name: string;
+}
+
 export interface CreateConversationInput {
   projectId: string;
   title?: string;
@@ -77,6 +82,11 @@ export interface CreateConversationInput {
   providerConnectionId?: string;
   modelId?: string;
   workspaceRootId: string;
+}
+
+export interface UpdateConversationInput {
+  conversationId: string;
+  title: string;
 }
 
 export interface SendMessageInput {
@@ -146,10 +156,15 @@ export interface MaestroDesktopApi {
   createProject(input: CreateProjectInput): Promise<Project>;
   listProjects(): Promise<Project[]>;
   selectProject(projectId: string): Promise<BootstrapPayload>;
+  updateProject(input: UpdateProjectInput): Promise<Project>;
+  deleteProject(projectId: string): Promise<BootstrapPayload>;
   addProjectRoot(projectId: string, directory: string): Promise<Project>;
+  removeProjectRoot(projectId: string, workspaceRootId: string): Promise<Project>;
   createConversation(input: CreateConversationInput): Promise<Conversation>;
   listConversations(projectId: string, limit?: number): Promise<Conversation[]>;
   getConversation(conversationId: string): Promise<ConversationDetail>;
+  updateConversation(input: UpdateConversationInput): Promise<Conversation>;
+  deleteConversation(conversationId: string): Promise<void>;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   getRun(runId: string): Promise<RunDetail>;
   getRunEvents(runId: string, afterSequence?: number, limit?: number): Promise<EventPage>;

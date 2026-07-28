@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   Check,
@@ -28,11 +28,12 @@ import { api } from "@renderer/lib/api";
 import { compactPath, providerInitials } from "@renderer/lib/utils";
 import { Badge } from "@renderer/components/ui/badge";
 import { Button } from "@renderer/components/ui/button";
-import { FieldLabel, Input, Select } from "@renderer/components/ui/form";
+import { Input, Select } from "@renderer/components/ui/form";
 import { Switch } from "@renderer/components/ui/switch";
 import { ThemePicker } from "@renderer/components/ui/theme-switcher";
 import { ProviderLoginTerminal } from "@renderer/components/provider-login-terminal";
 import { applyTheme } from "@renderer/lib/theme";
+import { InfoTooltip, TooltipProvider } from "@renderer/components/ui/tooltip";
 
 type SettingsTab = "connections" | "general" | "project" | "diagnostics";
 
@@ -67,98 +68,100 @@ export function SettingsPage({
   ] as const;
 
   return (
-    <div className="settings-page page-enter flex h-full min-w-0 flex-col bg-bg/45 xl:flex-row">
-      <aside className="w-full shrink-0 border-b border-border bg-bg-elevated/35 p-3 md:flex md:items-center md:gap-3 xl:block xl:w-52 xl:border-b-0 xl:border-r xl:p-4">
-        <div className="mb-3 shrink-0 px-2 md:mb-0 xl:mb-5">
-          <h1 className="text-[17px] font-semibold">Configurações</h1>
-          <p className="mt-1 text-[11px] text-text-faint">Aplicativo e projeto</p>
-        </div>
-        <nav
-          className="flex flex-1 gap-1 overflow-x-auto xl:block xl:space-y-1"
-          aria-label="Seções de configurações"
-        >
-          {tabs.map(([value, label, Icon]) => (
-            <button
-              key={value}
-              className={`flex h-10 shrink-0 items-center gap-2.5 rounded-[9px] px-3 text-[12px] font-medium xl:w-full ${tab === value ? "bg-primary/12 text-primary-soft" : "text-text-muted hover:bg-surface-hover hover:text-text"}`}
-              onClick={() => setTab(value)}
-            >
-              <Icon size={14} />
-              {label}
-            </button>
-          ))}
-        </nav>
-      </aside>
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1020px] p-5 md:p-6 xl:p-8">
-          {tab === "connections" ? (
-            <>
-              <SettingsHeader
-                title="Conexões"
-                description="Trabalhadores usam somente assinaturas isoladas. API paga é exclusiva do orquestrador."
-                action={
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={refresh.isPending}
-                    onClick={() => refresh.mutate()}
-                  >
-                    <RefreshCcw className={refresh.isPending ? "animate-spin" : ""} size={12} />
-                    Verificar
-                  </Button>
-                }
-              />
-              {bootstrap.vault.backend === "password-vault" && bootstrap.vault.locked ? (
-                <VaultUnlock bootstrap={bootstrap} onBootstrap={onBootstrap} />
-              ) : null}
-              <SubscriptionAccounts
-                bootstrap={bootstrap}
-                onBootstrap={onBootstrap}
-                onLogin={setLoginConnectionId}
-              />
-              <div className="mt-7">
-                <h3 className="text-[13px] font-semibold">Executáveis e API do orquestrador</h3>
-                <p className="mt-1 text-[10px] text-text-faint">
-                  Configurações de API nunca são usadas por chat, agente direto ou tarefas do DAG.
-                </p>
-              </div>
-              <div className="mt-5 space-y-4">
-                {bootstrap.providers.map((provider) => (
-                  <ProviderCard
-                    key={provider.descriptor.id}
-                    provider={provider}
-                    vaultLocked={bootstrap.vault.locked}
-                    bootstrap={bootstrap}
-                    onBootstrap={onBootstrap}
-                  />
-                ))}
-              </div>
-              {loginConnectionId ? (
-                <ProviderLoginTerminal
-                  account={bootstrap.providerConnections.find(
-                    (item) => item.connection.id === loginConnectionId,
-                  )!}
-                  onClose={() => setLoginConnectionId(null)}
-                  onFinished={() => {
-                    void api().bootstrap().then(onBootstrap);
-                  }}
+    <TooltipProvider delayDuration={320} skipDelayDuration={100}>
+      <div className="settings-page page-enter flex h-full min-w-0 flex-col bg-bg/45 xl:flex-row">
+        <aside className="w-full shrink-0 border-b border-border bg-bg-elevated/35 p-3 md:flex md:items-center md:gap-3 xl:block xl:w-52 xl:border-b-0 xl:border-r xl:p-4">
+          <div className="mb-3 shrink-0 px-2 md:mb-0 xl:mb-5">
+            <h1 className="text-[17px] font-semibold">Configurações</h1>
+            <p className="mt-1 text-[11px] text-text-faint">Aplicativo e projeto</p>
+          </div>
+          <nav
+            className="flex flex-1 gap-1 overflow-x-auto xl:block xl:space-y-1"
+            aria-label="Seções de configurações"
+          >
+            {tabs.map(([value, label, Icon]) => (
+              <button
+                key={value}
+                className={`flex h-10 shrink-0 items-center gap-2.5 rounded-[9px] px-3 text-[12px] font-medium xl:w-full ${tab === value ? "bg-primary/12 text-primary-soft" : "text-text-muted hover:bg-surface-hover hover:text-text"}`}
+                onClick={() => setTab(value)}
+              >
+                <Icon size={14} />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-[1020px] p-5 md:p-6 xl:p-8">
+            {tab === "connections" ? (
+              <>
+                <SettingsHeader
+                  title="Conexões"
+                  description="Trabalhadores usam somente assinaturas isoladas. API paga é exclusiva do orquestrador."
+                  action={
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={refresh.isPending}
+                      onClick={() => refresh.mutate()}
+                    >
+                      <RefreshCcw className={refresh.isPending ? "animate-spin" : ""} size={12} />
+                      Verificar
+                    </Button>
+                  }
                 />
-              ) : null}
-            </>
-          ) : tab === "general" ? (
-            <GeneralSettings bootstrap={bootstrap} onBootstrap={onBootstrap} />
-          ) : tab === "project" ? (
-            <ProjectSettings project={project} onBootstrap={onBootstrap} />
-          ) : (
-            <Diagnostics
-              bootstrap={bootstrap}
-              refresh={() => refresh.mutate()}
-              refreshing={refresh.isPending}
-            />
-          )}
+                {bootstrap.vault.backend === "password-vault" && bootstrap.vault.locked ? (
+                  <VaultUnlock bootstrap={bootstrap} onBootstrap={onBootstrap} />
+                ) : null}
+                <SubscriptionAccounts
+                  bootstrap={bootstrap}
+                  onBootstrap={onBootstrap}
+                  onLogin={setLoginConnectionId}
+                />
+                <div className="mt-7">
+                  <h3 className="text-[13px] font-semibold">Executáveis e API do orquestrador</h3>
+                  <p className="mt-1 text-[10px] text-text-faint">
+                    Configurações de API nunca são usadas por chat, agente direto ou tarefas do DAG.
+                  </p>
+                </div>
+                <div className="mt-5 space-y-4">
+                  {bootstrap.providers.map((provider) => (
+                    <ProviderCard
+                      key={provider.descriptor.id}
+                      provider={provider}
+                      vaultLocked={bootstrap.vault.locked}
+                      bootstrap={bootstrap}
+                      onBootstrap={onBootstrap}
+                    />
+                  ))}
+                </div>
+                {loginConnectionId ? (
+                  <ProviderLoginTerminal
+                    account={bootstrap.providerConnections.find(
+                      (item) => item.connection.id === loginConnectionId,
+                    )!}
+                    onClose={() => setLoginConnectionId(null)}
+                    onFinished={() => {
+                      void api().bootstrap().then(onBootstrap);
+                    }}
+                  />
+                ) : null}
+              </>
+            ) : tab === "general" ? (
+              <GeneralSettings bootstrap={bootstrap} onBootstrap={onBootstrap} />
+            ) : tab === "project" ? (
+              <ProjectSettings project={project} onBootstrap={onBootstrap} />
+            ) : (
+              <Diagnostics
+                bootstrap={bootstrap}
+                refresh={() => refresh.mutate()}
+                refreshing={refresh.isPending}
+              />
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
 
@@ -202,6 +205,10 @@ function SubscriptionAccounts({
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-[14px] font-semibold">Contas por assinatura</h3>
+            <InfoTooltip
+              content="Cada conta funciona em um perfil isolado do CLI. O roteamento e os limites abaixo definem como novas sessões são distribuídas entre elas."
+              label="Ajuda sobre contas por assinatura"
+            />
             <Badge tone="success">sem limite artificial</Badge>
           </div>
           <p className="mt-1 text-[10px] text-text-faint">
@@ -231,6 +238,7 @@ function SubscriptionAccounts({
       </div>
       <div className="grid gap-2 border-t border-border bg-bg-elevated/30 p-3 sm:grid-cols-[150px_1fr_auto]">
         <Select
+          aria-label="Provedor da nova conta"
           value={providerId}
           onChange={(event) => setProviderId(event.target.value as "codex" | "claude-code")}
         >
@@ -238,6 +246,7 @@ function SubscriptionAccounts({
           <option value="codex">Codex</option>
         </Select>
         <Input
+          aria-label="Nome da nova conta"
           value={name}
           onChange={(event) => setName(event.target.value)}
           placeholder="Nome da conta, ex.: Claude pessoal 2"
@@ -306,6 +315,10 @@ function SubscriptionAccountRow({
                 if (value && value !== connection.name) onUpdate({ name: value });
               }}
             />
+            <InfoTooltip
+              content="Nome local usado apenas para identificar este perfil. Renomear não altera a conta no Claude ou ChatGPT."
+              label="Ajuda sobre o nome da conta"
+            />
             <Badge tone={tone}>{healthLabel}</Badge>
             {connection.isDefault ? <Badge tone="neutral">perfil atual</Badge> : null}
             <Badge tone="success">assinatura</Badge>
@@ -321,9 +334,17 @@ function SubscriptionAccountRow({
           </p>
         </div>
         <div className="col-span-2 ml-12 flex flex-wrap items-end gap-2 lg:col-span-1 lg:ml-0">
-          <label className="text-[9px] font-semibold uppercase tracking-wide text-text-faint">
-            prioridade
+          <div>
+            <div className="flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-faint">
+              <label htmlFor={`account-priority-${connection.id}`}>prioridade</label>
+              <InfoTooltip
+                className="size-4"
+                content="Números menores são preferidos. Tem efeito principal no roteamento por prioridade e serve como desempate no modo de menor carga."
+                label="Ajuda sobre prioridade da conta"
+              />
+            </div>
             <Input
+              id={`account-priority-${connection.id}`}
               className="mt-1 h-7 w-16"
               type="number"
               min={0}
@@ -333,10 +354,18 @@ function SubscriptionAccountRow({
                 onUpdate({ priority: Math.max(0, event.target.valueAsNumber || 0) })
               }
             />
-          </label>
-          <label className="text-[9px] font-semibold uppercase tracking-wide text-text-faint">
-            sessões
+          </div>
+          <div>
+            <div className="flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-faint">
+              <label htmlFor={`account-sessions-${connection.id}`}>sessões</label>
+              <InfoTooltip
+                className="size-4"
+                content="Máximo de sessões simultâneas permitidas para esta conta. Ao atingir o limite, o Maestro escolhe outra conta disponível ou aguarda."
+                label="Ajuda sobre sessões simultâneas"
+              />
+            </div>
             <Input
+              id={`account-sessions-${connection.id}`}
               className="mt-1 h-7 w-16"
               type="number"
               min={1}
@@ -348,7 +377,7 @@ function SubscriptionAccountRow({
                 })
               }
             />
-          </label>
+          </div>
           <Button size="sm" variant="secondary" disabled={busy} onClick={onLogin}>
             <Link2 size={11} /> {health.status === "ready" ? "Reconectar" : "Conectar"}
           </Button>
@@ -401,6 +430,25 @@ function SettingsHeader({
       </div>
       {action}
     </header>
+  );
+}
+
+function SettingLabel({
+  children,
+  help,
+  htmlFor,
+}: {
+  children: React.ReactNode;
+  help: React.ReactNode;
+  htmlFor?: string;
+}) {
+  return (
+    <div className="mb-2 flex items-center gap-1">
+      <label htmlFor={htmlFor} className="text-[12px] font-semibold text-text-muted">
+        {children}
+      </label>
+      <InfoTooltip content={help} label="Mais informações sobre esta configuração" />
+    </div>
   );
 }
 
@@ -590,28 +638,40 @@ function ProviderField({
   onChange: (value: string | number | boolean) => void;
   configured: boolean;
 }) {
+  const inputId = useId();
   if (field.type === "boolean")
     return (
       <div className="flex items-center gap-3 rounded-[9px] border border-border bg-bg-elevated p-3 transition-colors hover:border-border-strong">
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-medium text-text">{field.label}</span>
+          <span className="flex items-center gap-1 text-[11px] font-medium text-text">
+            {field.label}
+            {field.description ? (
+              <InfoTooltip content={field.description} label={`Ajuda sobre ${field.label}`} />
+            ) : null}
+          </span>
           {field.description ? (
             <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               {field.description}
             </span>
           ) : null}
         </span>
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} aria-label={field.label} />
+        <Switch
+          id={inputId}
+          checked={Boolean(value)}
+          onCheckedChange={onChange}
+          aria-label={field.label}
+        />
       </div>
     );
   return (
     <div>
-      <FieldLabel>
+      <SettingLabel htmlFor={inputId} help={field.description ?? `Configura ${field.label}.`}>
         {field.label}
         {field.required ? " *" : ""}
-      </FieldLabel>
+      </SettingLabel>
       {field.type === "select" ? (
         <Select
+          id={inputId}
           className="w-full"
           value={String(value)}
           onChange={(event) => onChange(event.target.value)}
@@ -624,6 +684,7 @@ function ProviderField({
         </Select>
       ) : (
         <Input
+          id={inputId}
           type={field.type === "secret" ? "password" : field.type === "number" ? "number" : "text"}
           value={value as string | number}
           placeholder={
@@ -686,7 +747,9 @@ function GeneralSettings({
       <section className="panel mt-6 p-5 md:p-6">
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="lg:col-span-2">
-            <FieldLabel>Aparência</FieldLabel>
+            <SettingLabel help="Muda apenas o visual da interface. A opção Sistema acompanha automaticamente o tema claro ou escuro do dispositivo.">
+              Aparência
+            </SettingLabel>
             <ThemePicker
               value={settings.theme}
               onValueChange={(theme) => setSettings({ ...settings, theme })}
@@ -696,8 +759,14 @@ function GeneralSettings({
             </p>
           </div>
           <div>
-            <FieldLabel>Idioma</FieldLabel>
+            <SettingLabel
+              htmlFor="settings-locale"
+              help="Define o idioma preferido da interface e dos textos padrão do aplicativo. Não força o idioma das respostas dos modelos."
+            >
+              Idioma
+            </SettingLabel>
             <Select
+              id="settings-locale"
               className="w-full"
               value={settings.locale}
               onChange={(event) =>
@@ -709,8 +778,14 @@ function GeneralSettings({
             </Select>
           </div>
           <div>
-            <FieldLabel>Modo padrão</FieldLabel>
+            <SettingLabel
+              htmlFor="settings-default-mode"
+              help="É o modo pré-selecionado ao criar uma conversa. Maestro planeja e coordena tarefas; Agente direto trabalha com um único agente; Chat simples apenas conversa."
+            >
+              Modo padrão
+            </SettingLabel>
             <Select
+              id="settings-default-mode"
               className="w-full"
               value={settings.defaultMode}
               onChange={(event) =>
@@ -726,8 +801,14 @@ function GeneralSettings({
             </Select>
           </div>
           <div>
-            <FieldLabel>Concorrência global (1–16)</FieldLabel>
+            <SettingLabel
+              htmlFor="settings-global-concurrency"
+              help="Limita quantas tarefas do Maestro podem executar ao mesmo tempo. Valores maiores podem acelerar planos paralelos, mas consomem mais CPU, memória e sessões de assinatura."
+            >
+              Concorrência global (1–16)
+            </SettingLabel>
             <Input
+              id="settings-global-concurrency"
               type="number"
               min={1}
               max={16}
@@ -738,8 +819,14 @@ function GeneralSettings({
             />
           </div>
           <div>
-            <FieldLabel>Roteamento entre assinaturas</FieldLabel>
+            <SettingLabel
+              htmlFor="settings-subscription-routing"
+              help="Decide qual conta Claude/Codex disponível recebe uma nova sessão: menor carga equilibra uso, alternar distribui em sequência e prioridade usa primeiro os menores números."
+            >
+              Roteamento entre assinaturas
+            </SettingLabel>
             <Select
+              id="settings-subscription-routing"
               className="w-full"
               value={settings.subscriptionRouting}
               onChange={(event) =>
@@ -755,8 +842,14 @@ function GeneralSettings({
             </Select>
           </div>
           <div>
-            <FieldLabel>Canal de atualização</FieldLabel>
+            <SettingLabel
+              htmlFor="settings-update-channel"
+              help="Estável recebe somente versões finais. Beta também recebe prévias, que podem trazer recursos antes, mas têm maior chance de instabilidade."
+            >
+              Canal de atualização
+            </SettingLabel>
             <Select
+              id="settings-update-channel"
               className="w-full"
               value={settings.updateChannel}
               onChange={(event) =>
@@ -792,7 +885,13 @@ function GeneralSettings({
         </div>
         <div className="mt-5 flex items-center gap-4 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
           <span className="min-w-0 flex-1">
-            <span className="block text-[12px] font-semibold">Telemetria local</span>
+            <span className="flex items-center gap-1 text-[12px] font-semibold">
+              Telemetria local
+              <InfoTooltip
+                content="Calcula contagens e métricas de uso somente neste dispositivo. Ativar não envia dados para servidores do Maestro."
+                label="Ajuda sobre telemetria local"
+              />
+            </span>
             <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               Calcula métricas no dispositivo. Nenhum envio remoto é realizado pelo Maestro.
             </span>
@@ -805,8 +904,12 @@ function GeneralSettings({
         </div>
         <div className="mt-3 flex items-center gap-4 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
           <span className="min-w-0 flex-1">
-            <span className="block text-[12px] font-semibold">
+            <span className="flex items-center gap-1 text-[12px] font-semibold">
               Verificar atualizações automaticamente
+              <InfoTooltip
+                content="Faz uma consulta ao iniciar e depois a cada seis horas. O Maestro avisa antes de baixar ou instalar qualquer versão."
+                label="Ajuda sobre atualizações automáticas"
+              />
             </span>
             <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               Verifica ao iniciar e a cada seis horas; download e instalação são oferecidos antes de
@@ -888,7 +991,13 @@ function ProjectSettings({
       <section className="panel mt-6 overflow-hidden">
         <div className="panel-header">
           <div>
-            <h3 className="text-[14px] font-semibold">{project.name}</h3>
+            <div className="flex items-center gap-1">
+              <h3 className="text-[14px] font-semibold">{project.name}</h3>
+              <InfoTooltip
+                content="O projeto agrupa conversas, execuções e pastas autorizadas. Renomear ou gerenciar projetos pode ser feito pelo menu de três pontos na barra lateral."
+                label="Ajuda sobre o projeto"
+              />
+            </div>
             <p className="mt-0.5 text-[10px] text-text-faint">
               {project.roots.length} pasta{project.roots.length === 1 ? "" : "s"} no escopo
             </p>
@@ -910,9 +1019,19 @@ function ProjectSettings({
                   {compactPath(root.canonicalPath, 100)}
                 </div>
               </div>
-              <Badge tone={root.writable ? "warning" : "neutral"}>
-                {root.writable ? "escrita após aprovação" : "somente leitura"}
-              </Badge>
+              <span className="flex items-center gap-1">
+                <Badge tone={root.writable ? "warning" : "neutral"}>
+                  {root.writable ? "escrita após aprovação" : "somente leitura"}
+                </Badge>
+                <InfoTooltip
+                  content={
+                    root.writable
+                      ? "Agentes só podem gravar nesta pasta depois de uma aprovação explícita do plano. Leitura e execução continuam limitadas ao escopo autorizado."
+                      : "Agentes podem consultar esta pasta, mas nunca gravar alterações nela."
+                  }
+                  label={`Ajuda sobre permissões de ${root.displayName}`}
+                />
+              </span>
             </div>
           ))}
         </div>

@@ -183,6 +183,10 @@ else if (command[0] === "exec") {
       BrowserWindow.getAllWindows()[0]?.webContents.reload(),
     );
     await expect(page.getByRole("heading", { name: "Projeto E2E" })).toBeVisible();
+    await page.getByRole("button", { name: "Mais ações para o projeto Projeto E2E" }).click();
+    await expect(page.getByRole("menuitem", { name: "Renomear projeto…" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Gerenciar pastas…" })).toBeVisible();
+    await page.keyboard.press("Escape");
 
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
     const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
@@ -201,6 +205,18 @@ else if (command[0] === "exec") {
     await page.getByRole("button", { name: "Aprovar e executar" }).click();
     expect(await waitForRun(page, "completed")).toBe(runId);
     expect(await readFile(sentinel, "utf8")).toBe("do not change\n");
+
+    const recentConversation = page.locator("aside").getByTitle("Execute o fluxo Maestro E2E");
+    await recentConversation.click({ button: "right" });
+    await expect(page.getByRole("menuitem", { name: "Renomear" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Excluir conversa" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await recentConversation.hover();
+    await page.getByRole("button", { name: "Mais ações para Execute o fluxo Maestro E2E" }).click();
+    await page.getByRole("menuitem", { name: "Renomear" }).click();
+    await page.getByLabel("Título", { exact: true }).fill("Fluxo Maestro E2E");
+    await page.getByRole("button", { name: "Salvar título" }).click();
+    await expect(page.locator("aside").getByTitle("Fluxo Maestro E2E")).toBeVisible();
 
     await page
       .getByRole("button", { name: /Maestro/ })
@@ -228,9 +244,7 @@ else if (command[0] === "exec") {
     await expect(page.getByRole("button", { name: "Encerrar" })).toBeVisible();
     await page.getByRole("button", { name: "Encerrar" }).click();
     await page.getByRole("button", { name: "Histórico" }).click();
-    await expect(
-      page.getByText("Execute o fluxo Maestro E2E", { exact: true }).first(),
-    ).toBeVisible();
+    await expect(page.getByText("Fluxo Maestro E2E", { exact: true }).first()).toBeVisible();
     await page.getByRole("button", { name: "Configurações" }).click();
     await expect(page.getByRole("heading", { name: "Contas por assinatura" })).toBeVisible();
     await expect(page.getByLabel("Nome da conta").first()).toHaveValue("Conta padrão");
@@ -243,6 +257,21 @@ else if (command[0] === "exec") {
     await expect(
       page.getByRole("switch", { name: "Verificar atualizações automaticamente" }),
     ).toBeChecked();
+    await page.getByRole("button", { name: "Ajuda sobre telemetria local" }).hover();
+    await expect(
+      page.getByText(/Calcula contagens e métricas de uso somente neste dispositivo/),
+    ).toBeVisible();
+
+    await page.locator("aside").getByTitle("Fluxo Maestro E2E").hover();
+    await page.getByRole("button", { name: "Mais ações para Fluxo Maestro E2E" }).click();
+    await page.getByRole("menuitem", { name: "Excluir conversa" }).click();
+    await page.getByRole("button", { name: "Excluir conversa" }).click();
+    await expect(page.locator("aside").getByTitle("Fluxo Maestro E2E")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Mais ações para o projeto Projeto E2E" }).click();
+    await page.getByRole("menuitem", { name: "Excluir projeto…" }).click();
+    await page.getByRole("button", { name: "Excluir projeto" }).click();
+    await expect(page.getByRole("heading", { name: "Abra seu workspace" })).toBeVisible();
   } finally {
     await application?.close().catch(() => undefined);
     await new Promise<void>((resolve) => apiFixture.server.close(() => resolve()));
