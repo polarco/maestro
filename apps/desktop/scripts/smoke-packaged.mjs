@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { _electron as electron } from "@playwright/test";
@@ -8,6 +8,10 @@ const executablePath = process.env.MAESTRO_SMOKE_EXECUTABLE;
 if (!executablePath) {
   throw new Error("MAESTRO_SMOKE_EXECUTABLE must point to the packaged application.");
 }
+
+const desktopPackage = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
 
 const userDataDirectory = await mkdtemp(path.join(tmpdir(), "maestro-packaged-smoke-"));
 let application;
@@ -44,7 +48,7 @@ try {
     };
   });
   assert.equal(result.name, "Maestro");
-  assert.equal(result.version, "0.2.0");
+  assert.equal(result.version, desktopPackage.version);
   assert.equal(result.development, false);
   assert.equal(result.projects, true);
   assert.equal(result.providers, true);

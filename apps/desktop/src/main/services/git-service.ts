@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { MaestroError } from "@maestro/core";
 import type { ProcessSupervisor } from "./process-supervisor.js";
@@ -98,10 +98,14 @@ export class GitService {
         { recoverable: true },
       );
     }
+    const [repositoryRoot, canonicalSourceRoot] = await Promise.all([
+      realpath(info.repositoryRoot),
+      realpath(sourceRoot),
+    ]);
     return {
       runId,
-      repositoryRoot: info.repositoryRoot,
-      sourceRoot,
+      repositoryRoot,
+      sourceRoot: canonicalSourceRoot,
       sourceBranch: info.branch,
       baseHead: info.head,
       initiallyDirty: info.dirty,
