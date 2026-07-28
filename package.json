@@ -16,7 +16,7 @@
     "test": "pnpm run build:packages && pnpm --filter @maestro/core test && pnpm --filter @maestro/database test && pnpm --filter @maestro/desktop test",
     "test:e2e": "pnpm build && pnpm --filter @maestro/desktop test:e2e",
     "test:watch": "pnpm -r --parallel test:watch",
-    "lint": "eslint . --max-warnings=0",
+    "lint": "pnpm run build:packages && eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "package:linux": "pnpm run build:packages && pnpm --filter @maestro/desktop package:linux",
