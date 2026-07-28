@@ -136,7 +136,8 @@ jobs:
           name: release-${{ matrix.platform }}
           path: |
             release/Maestro-*
-            release/*.yml
+            release/latest*.yml
+            release/beta*.yml
           if-no-files-found: error
           retention-days: 7
 
