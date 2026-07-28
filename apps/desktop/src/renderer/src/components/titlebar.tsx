@@ -20,8 +20,8 @@ export function Titlebar({
   return (
     <header className="titlebar flex h-[42px] shrink-0 items-center border-b border-border/80 bg-bg/95 px-3">
       <div className="flex min-w-0 flex-1 items-center gap-2.5 pl-1 text-[11px] font-medium text-text-faint">
-        <span className="size-2 rounded-full bg-primary shadow-[0_0_14px_rgb(124_131_247/0.6)]" />
-        <span className="text-text-muted">Maestro</span>
+        <span className="size-2 rounded-full bg-primary shadow-[0_0_0_3px_rgb(251_65_55/0.12)]" />
+        <span className="font-semibold tracking-[-0.015em] text-text-muted">maestro</span>
         <span className="text-border-strong">/</span>
         <span className="truncate">{context ?? "Central de agentes local"}</span>
       </div>
@@ -32,7 +32,7 @@ export function Titlebar({
           aria-label="Abrir busca rápida"
         >
           <Search size={12} />
-          <span className="flex-1">Buscar ou navegar</span>
+          <span className="min-w-0 flex-1 truncate whitespace-nowrap">Buscar ou navegar</span>
           <kbd className="flex items-center gap-0.5 rounded border border-border px-1.5 py-0.5 text-[9px]">
             {mac ? <Command size={8} /> : "Ctrl"} K
           </kbd>

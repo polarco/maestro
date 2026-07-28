@@ -141,11 +141,11 @@ export function Dashboard({
     <div className="page-enter h-full overflow-y-auto">
       <div className="mx-auto max-w-[1320px] p-5 md:p-6 xl:p-8">
         <header className="relative mb-5 overflow-hidden rounded-[18px] border border-border bg-surface px-5 py-5 shadow-[var(--panel-shadow)] md:px-6">
-          <div className="pointer-events-none absolute -right-24 -top-28 size-80 rounded-full bg-primary/10 blur-3xl" />
+          <div className="hero-dot-field pointer-events-none absolute inset-y-0 right-0 w-[38%] opacity-70" />
           <div className="relative flex flex-wrap items-center justify-between gap-5">
             <div className="min-w-0">
               <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-success">
-                <span className="size-1.5 rounded-full bg-success shadow-[0_0_8px_rgb(79_209_170/0.65)]" />
+                <span className="size-1.5 rounded-full bg-success shadow-[0_0_8px_rgb(105_201_167/0.6)]" />
                 Workspace ativo
               </div>
               <h1 className="truncate text-[27px] font-semibold tracking-[-0.035em] text-text">

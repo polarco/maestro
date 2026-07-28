@@ -41,14 +41,15 @@ export function Onboarding({ onCreated }: OnboardingProps) {
   return (
     <main className="relative flex min-h-0 flex-1 overflow-y-auto bg-bg p-5 md:p-8">
       <div className="onboarding-grid pointer-events-none fixed inset-0 opacity-40" />
-      <div className="pointer-events-none fixed -right-32 -top-32 size-[520px] rounded-full bg-primary/10 blur-3xl" />
-      <section className="page-enter relative z-10 m-auto grid w-full max-w-[1040px] overflow-hidden rounded-[22px] border border-border bg-surface shadow-[0_32px_100px_rgb(0_0_0/0.38)] min-[900px]:grid-cols-[1.05fr_.95fr]">
+      <div className="hero-dot-field pointer-events-none fixed inset-y-0 right-0 w-[44%] opacity-55" />
+      <section className="page-enter relative z-10 m-auto grid w-full max-w-[1040px] overflow-hidden rounded-[28px] border border-border bg-surface shadow-[0_28px_80px_-36px_rgb(0_0_0/0.52)] min-[900px]:grid-cols-[1.05fr_.95fr]">
+        <div className="absolute inset-x-0 top-0 z-10 h-1 bg-primary" />
         <div className="flex flex-col justify-between border-b border-border p-7 md:p-9 min-[900px]:border-b-0 min-[900px]:border-r">
           <div>
             <div className="mb-8 flex items-center gap-3">
               <MaestroMark className="size-11" />
               <div>
-                <div className="text-[18px] font-semibold tracking-tight">Maestro</div>
+                <div className="text-[18px] font-semibold tracking-[-0.035em]">maestro</div>
                 <div className="text-[11px] text-text-faint">Central local de agentes de IA</div>
               </div>
             </div>

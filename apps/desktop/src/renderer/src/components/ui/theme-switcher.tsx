@@ -50,7 +50,7 @@ export function ThemeToggle({
   return (
     <div
       className={cn(
-        "inline-flex h-8 items-center rounded-[10px] border border-border bg-bg-elevated/80 p-0.5 shadow-[inset_0_1px_0_rgb(255_255_255/0.025),0_4px_14px_rgb(0_0_0/0.08)]",
+        "inline-flex h-8 items-center rounded-full border border-border bg-bg-elevated/85 p-0.5 shadow-[inset_0_1px_0_rgb(255_255_255/0.035),0_4px_14px_rgb(0_0_0/0.08)]",
         disabled && "opacity-60",
         className,
       )}
@@ -64,8 +64,8 @@ export function ThemeToggle({
           <label
             key={option.value}
             className={cn(
-              "theme-option relative grid size-[26px] place-items-center rounded-[8px] text-text-faint transition-colors",
-              active ? "text-text" : "hover:text-text-muted",
+              "theme-option relative grid size-[26px] place-items-center rounded-full text-text-faint transition-colors",
+              active ? "text-primary-foreground" : "hover:text-text-muted",
               disabled ? "cursor-default" : "cursor-pointer",
             )}
             title={
@@ -91,7 +91,7 @@ export function ThemeToggle({
             {active ? (
               <motion.span
                 aria-hidden="true"
-                className="absolute inset-0 rounded-[7px] border border-border-strong bg-surface-raised shadow-[0_2px_8px_rgb(0_0_0/0.12)]"
+                className="absolute inset-0 rounded-full border border-primary bg-primary shadow-[0_4px_12px_-6px_rgb(251_65_55/0.8)]"
                 layoutId={`compact-theme-${name}`}
                 transition={
                   reduceMotion ? { duration: 0 } : { type: "spring", bounce: 0.08, duration: 0.48 }
@@ -135,7 +135,7 @@ export function ThemePicker({
           <label
             key={option.value}
             className={cn(
-              "theme-option group relative flex min-h-[82px] items-center gap-3 overflow-hidden rounded-[12px] border bg-bg-elevated p-3.5 transition-[border-color,background-color,transform]",
+              "theme-option group relative flex min-h-[82px] items-center gap-3 overflow-hidden rounded-[14px] border bg-bg-elevated p-3.5 transition-[border-color,background-color,transform]",
               active
                 ? "border-primary/45 bg-primary/[0.055]"
                 : "border-border hover:-translate-y-0.5 hover:border-border-strong hover:bg-surface-hover/40",
@@ -155,7 +155,7 @@ export function ThemePicker({
             {active ? (
               <motion.span
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 rounded-[11px] ring-1 ring-inset ring-primary/25"
+                className="pointer-events-none absolute inset-0 rounded-[13px] ring-1 ring-inset ring-primary/28"
                 layoutId={`settings-theme-${name}`}
                 transition={
                   reduceMotion ? { duration: 0 } : { type: "spring", bounce: 0.08, duration: 0.52 }
@@ -164,7 +164,7 @@ export function ThemePicker({
             ) : null}
             <span
               className={cn(
-                "relative grid size-10 shrink-0 place-items-center rounded-[10px] border transition-colors",
+                "relative grid size-10 shrink-0 place-items-center rounded-[12px] border transition-colors",
                 active
                   ? "border-primary/25 bg-primary/12 text-primary-soft"
                   : "border-border bg-surface text-text-faint group-hover:text-text-muted",

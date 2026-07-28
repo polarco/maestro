@@ -26,28 +26,28 @@ export function ProviderLoginTerminal({
     if (!host) return;
     const terminal = new XTerm({
       cursorBlink: true,
-      fontFamily: '"JetBrains Mono", "Cascadia Code", Consolas, monospace',
+      fontFamily: '"Geist Mono Variable", "Geist Mono", "Cascadia Code", Consolas, monospace',
       fontSize: 12,
       lineHeight: 1.35,
       scrollback: 4_000,
       theme: {
-        background: "#0b0d12",
-        foreground: "#d8dbe2",
-        cursor: "#aaa7ff",
-        selectionBackground: "#353363",
-        red: "#ef6a7a",
-        green: "#43c59e",
-        yellow: "#e8ad55",
-        blue: "#59b8e8",
-        magenta: "#aaa7ff",
-        cyan: "#65d6ce",
+        background: "#181611",
+        foreground: "#e7e3d9",
+        cursor: "#fb4137",
+        selectionBackground: "#5b2e27",
+        red: "#f17878",
+        green: "#69c9a7",
+        yellow: "#efb65d",
+        blue: "#70b7d6",
+        magenta: "#ff8d86",
+        cyan: "#7cc9c0",
       },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
     terminal.write(
-      `\x1b[38;5;141mConectando ${account.connection.name}\x1b[0m\r\n` +
+      `\x1b[38;5;203mConectando ${account.connection.name}\x1b[0m\r\n` +
         "Este fluxo aceita somente a assinatura oficial; o Maestro não recebe seus tokens.\r\n\r\n",
     );
     terminalRef.current = terminal;
@@ -120,7 +120,7 @@ export function ProviderLoginTerminal({
             {error}
           </div>
         ) : null}
-        <div ref={hostRef} className="min-h-0 flex-1 bg-[#0b0d12] p-2" />
+        <div ref={hostRef} className="min-h-0 flex-1 bg-[#181611] p-2" />
         <footer className="flex h-10 shrink-0 items-center gap-2 border-t border-border px-4 text-[9px] text-text-faint">
           <RefreshCcw size={10} /> Após concluir no navegador, aguarde o processo encerrar e use
           “Verificar”.

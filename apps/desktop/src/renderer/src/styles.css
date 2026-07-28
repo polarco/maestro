@@ -1,29 +1,33 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
 @theme {
-  --color-bg: #090b11;
-  --color-bg-elevated: #0d1119;
-  --color-sidebar: #0b0e15;
-  --color-surface: #111620;
-  --color-surface-raised: #171d29;
-  --color-surface-hover: #1c2432;
-  --color-border: #252d3b;
-  --color-border-strong: #374255;
-  --color-text: #f5f7fb;
-  --color-text-muted: #a5adbc;
-  --color-text-faint: #808b9d;
-  --color-primary: #7c83f7;
-  --color-primary-strong: #6870ea;
-  --color-primary-soft: #b6b9ff;
-  --color-success: #4fd1aa;
-  --color-warning: #f2b85d;
-  --color-danger: #f17887;
-  --color-info: #63bce7;
+  --color-bg: #181611;
+  --color-bg-elevated: #1d1a15;
+  --color-sidebar: #1b1914;
+  --color-surface: #201d17;
+  --color-surface-raised: #26231c;
+  --color-surface-hover: #2b271f;
+  --color-border: #342f27;
+  --color-border-strong: #4b4438;
+  --color-text: #f4f3ee;
+  --color-text-muted: #a8a293;
+  --color-text-faint: #918b7e;
+  --color-primary: #fb4137;
+  --color-primary-strong: #e43b32;
+  --color-primary-soft: #ff8d86;
+  --color-primary-foreground: #181611;
+  --color-success: #69c9a7;
+  --color-warning: #efb65d;
+  --color-danger: #f17878;
+  --color-info: #70b7d6;
   --font-sans:
-    "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-mono:
+    "Geist Mono Variable", "Geist Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
 
 :root {
@@ -34,30 +38,33 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --panel-shadow: 0 1px 0 rgb(255 255 255 / 0.025), 0 18px 50px rgb(0 0 0 / 0.14);
+  --panel-shadow: 0 1px 0 rgb(255 255 255 / 0.025), 0 14px 36px -20px rgb(0 0 0 / 0.52);
+  --dot-color: rgb(177 173 161 / 0.09);
 }
 
 :root[data-theme="light"] {
-  --color-bg: #f4f6f9;
-  --color-bg-elevated: #edf0f5;
-  --color-sidebar: #f7f8fb;
-  --color-surface: #ffffff;
-  --color-surface-raised: #fafbfc;
-  --color-surface-hover: #e9edf4;
-  --color-border: #dce1e9;
-  --color-border-strong: #c8d0dd;
-  --color-text: #151a24;
-  --color-text-muted: #566173;
-  --color-text-faint: #606c7f;
-  --color-primary: #6269e8;
-  --color-primary-strong: #5159d7;
-  --color-primary-soft: #4f56c9;
-  --color-success: #187f63;
-  --color-warning: #9b650f;
-  --color-danger: #c63f53;
-  --color-info: #247ba6;
+  --color-bg: #f4f3ee;
+  --color-bg-elevated: #ebe9e1;
+  --color-sidebar: #f7f5ef;
+  --color-surface: #faf9f5;
+  --color-surface-raised: #fffefb;
+  --color-surface-hover: #ebe9e1;
+  --color-border: #dfdbd0;
+  --color-border-strong: #c9c3b5;
+  --color-text: #26241f;
+  --color-text-muted: #706c60;
+  --color-text-faint: #6d685d;
+  --color-primary: #d9362f;
+  --color-primary-strong: #bd2d27;
+  --color-primary-soft: #c9302a;
+  --color-primary-foreground: #ffffff;
+  --color-success: #18785f;
+  --color-warning: #95620e;
+  --color-danger: #bd3e4d;
+  --color-info: #246f94;
   color-scheme: light;
-  --panel-shadow: 0 1px 2px rgb(15 23 42 / 0.035), 0 14px 38px rgb(15 23 42 / 0.045);
+  --panel-shadow: 0 1px 2px rgb(38 36 31 / 0.035), 0 12px 28px -18px rgb(38 36 31 / 0.22);
+  --dot-color: rgb(112 108 96 / 0.105);
 }
 
 * {
@@ -78,7 +85,7 @@ button,
 input,
 textarea,
 select {
-  font: inherit;
+  font-family: inherit;
 }
 
 button,
@@ -98,7 +105,7 @@ button:disabled {
 }
 
 :where(button, input, textarea, select, a):focus-visible {
-  outline: 2px solid rgb(124 131 247 / 0.78);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, transparent);
   outline-offset: 2px;
 }
 
@@ -108,7 +115,7 @@ select option {
 }
 
 ::selection {
-  background: rgb(133 128 244 / 0.28);
+  background: color-mix(in srgb, var(--color-primary) 26%, transparent);
 }
 
 .titlebar {
@@ -141,7 +148,7 @@ select option {
 }
 
 .theme-option:has(input:focus-visible) {
-  outline: 2px solid rgb(124 131 247 / 0.78);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 78%, transparent);
   outline-offset: 2px;
 }
 
@@ -152,7 +159,7 @@ select option {
   align-items: center;
   gap: 9px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 0 10px;
   color: var(--color-text-muted);
   background: transparent;
@@ -172,13 +179,15 @@ select option {
 
 .sidebar-nav-active {
   color: var(--color-text);
-  border-color: rgb(124 131 247 / 0.18);
-  background: linear-gradient(90deg, rgb(124 131 247 / 0.14), rgb(124 131 247 / 0.065));
-  box-shadow: inset 3px 0 0 rgb(124 131 247 / 0.85);
+  border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 11%, var(--color-sidebar));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-primary) 88%, transparent);
 }
 
 .onboarding-grid {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ccircle cx='1' cy='1' r='1' fill='%23949baa' fill-opacity='.18'/%3E%3C/svg%3E");
+  background-image: radial-gradient(circle, var(--dot-color) 1px, transparent 1px);
+  background-position: -1px -1px;
+  background-size: 22px 22px;
 }
 
 @media (min-width: 900px) {
@@ -216,8 +225,8 @@ select option {
 
 .panel {
   border: 1px solid var(--color-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-surface) 98%, transparent);
   box-shadow: var(--panel-shadow);
 }
 
@@ -232,7 +241,7 @@ select option {
 }
 
 .focus-ring:focus-visible {
-  outline: 2px solid rgb(133 128 244 / 0.7);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 72%, transparent);
   outline-offset: 2px;
 }
 
@@ -277,7 +286,7 @@ select option {
 
 .markdown blockquote {
   margin: 0.8rem 0;
-  border-left: 3px solid rgb(124 131 247 / 0.55);
+  border-left: 3px solid color-mix(in srgb, var(--color-primary) 58%, transparent);
   padding-left: 0.9rem;
   color: var(--color-text-faint);
 }
@@ -352,8 +361,20 @@ select option {
 }
 
 .app-canvas {
-  background:
-    radial-gradient(circle at 84% -12%, rgb(124 131 247 / 0.07), transparent 34rem), var(--color-bg);
+  background-color: var(--color-bg);
+  background-image: radial-gradient(circle, var(--dot-color) 1px, transparent 1px);
+  background-position: -1px -1px;
+  background-size: 22px 22px;
+}
+
+.hero-dot-field {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-primary) 32%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 16px 16px;
+  mask-image: linear-gradient(to left, black 28%, transparent 92%);
 }
 
 .page-enter {
@@ -362,14 +383,14 @@ select option {
 
 .glass-popover {
   border: 1px solid var(--color-border-strong);
-  background: color-mix(in srgb, var(--color-surface-raised) 94%, transparent);
-  box-shadow: 0 24px 70px rgb(0 0 0 / 0.38);
-  backdrop-filter: blur(20px);
+  background: color-mix(in srgb, var(--color-surface-raised) 98%, transparent);
+  box-shadow: 0 20px 54px -18px rgb(0 0 0 / 0.42);
+  backdrop-filter: blur(16px);
 }
 
 .composer-card {
   border: 1px solid var(--color-border-strong);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--color-surface);
   box-shadow:
     0 -10px 38px rgb(0 0 0 / 0.1),
@@ -380,14 +401,14 @@ select option {
 }
 
 .composer-card:focus-within {
-  border-color: rgb(124 131 247 / 0.58);
+  border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border));
   box-shadow:
-    0 0 0 3px rgb(124 131 247 / 0.09),
+    0 0 0 3px color-mix(in srgb, var(--color-primary) 9%, transparent),
     0 16px 42px rgb(0 0 0 / 0.16);
 }
 
 .command-backdrop {
-  background: rgb(2 5 10 / 0.68);
+  background: rgb(24 22 17 / 0.72);
   backdrop-filter: blur(7px);
 }
 

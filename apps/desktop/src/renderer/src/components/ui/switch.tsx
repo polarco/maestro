@@ -27,7 +27,7 @@ export function Switch({
       className={cn(
         "relative h-8 w-[54px] shrink-0 rounded-full border p-[3px] transition-[border-color,background-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/65 focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
         checked
-          ? "border-primary/50 bg-primary shadow-[inset_0_1px_2px_rgb(45_43_138/0.22)]"
+          ? "border-primary/55 bg-primary shadow-[inset_0_1px_2px_rgb(104_30_25/0.24)]"
           : "border-border-strong bg-bg shadow-inner hover:bg-surface-hover",
         disabled && "cursor-default opacity-45",
         className,

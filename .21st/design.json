@@ -16,12 +16,12 @@
     "charts": "Recharts"
   },
   "visualDirection": {
-    "name": "Focused operations console",
+    "name": "Warm local operations studio",
     "principles": [
       "dense enough for professional agent operations without feeling like a monitoring wall",
-      "warm neutral surfaces with restrained indigo and cyan status accents",
-      "strong information hierarchy, quiet borders, and clear progressive disclosure",
-      "no decorative gradients, glassmorphism, or oversized marketing typography"
+      "cream and greige surfaces with coral reserved for primary actions and identity",
+      "warm graphite dark mode, quiet borders, soft shadows, and clear progressive disclosure",
+      "subtle dot-grid texture, generous corners, compact controls, and no decorative gradients"
     ],
     "references": [
       "AI Agent Pipeline",
@@ -34,27 +34,27 @@
   },
   "tokens": {
     "color": {
-      "background": "#0b0d12",
-      "surface": "#11141b",
-      "surfaceRaised": "#171b24",
-      "border": "#272c38",
-      "text": "#f3f4f6",
-      "textMuted": "#949baa",
-      "primary": "#8b87ff",
-      "primaryStrong": "#706cf6",
-      "success": "#43c59e",
-      "warning": "#e8ad55",
-      "danger": "#ef6a7a",
-      "info": "#59b8e8"
+      "background": "#181611",
+      "surface": "#201d17",
+      "surfaceRaised": "#26231c",
+      "border": "#342f27",
+      "text": "#f4f3ee",
+      "textMuted": "#a8a293",
+      "primary": "#fb4137",
+      "primaryStrong": "#e43b32",
+      "success": "#69c9a7",
+      "warning": "#efb65d",
+      "danger": "#f17878",
+      "info": "#70b7d6"
     },
     "radius": {
-      "sm": "6px",
-      "md": "10px",
-      "lg": "14px"
+      "sm": "8px",
+      "md": "12px",
+      "lg": "18px"
     },
     "type": {
-      "sans": "Inter Variable, Inter, ui-sans-serif, system-ui",
-      "mono": "JetBrains Mono, ui-monospace, SFMono-Regular, monospace"
+      "sans": "Geist Variable, Geist, ui-sans-serif, system-ui",
+      "mono": "Geist Mono Variable, Geist Mono, ui-monospace, SFMono-Regular, monospace"
     },
     "spacing": "4px base grid"
   },

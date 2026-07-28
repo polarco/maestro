@@ -312,7 +312,7 @@ export function ConversationPage({
         <div className="mx-auto flex min-h-full max-w-[940px] flex-col px-5 py-7 md:px-7">
           {detail.messages.length === 0 ? (
             <div className="conversation-empty my-auto flex flex-col items-center py-12 text-center">
-              <div className="conversation-empty-mark relative grid size-16 place-items-center rounded-[19px] border border-primary/20 bg-primary/[0.08] text-primary-soft shadow-[0_16px_50px_rgb(91_88_210/0.12)]">
+              <div className="conversation-empty-mark relative grid size-16 place-items-center rounded-[20px] border border-primary/25 bg-primary/[0.09] text-primary-soft shadow-[0_18px_48px_-22px_rgb(251_65_55/0.58)]">
                 <BrainCircuit size={27} />
                 <span className="absolute -right-1 -top-1 size-3 rounded-full border-2 border-bg bg-success" />
               </div>

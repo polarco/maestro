@@ -63,7 +63,7 @@ function NavButton({
       <span className="relative shrink-0">
         {icon}
         {collapsed && badge !== undefined && badge > 0 ? (
-          <span className="absolute -right-2 -top-2 grid size-4 place-items-center rounded-full border-2 border-sidebar bg-primary text-[8px] font-bold text-white">
+          <span className="absolute -right-2 -top-2 grid size-4 place-items-center rounded-full border-2 border-sidebar bg-primary text-[8px] font-bold text-primary-foreground">
             {Math.min(badge, 9)}
           </span>
         ) : null}
@@ -125,8 +125,8 @@ export function Sidebar({
         <MaestroMark className="size-8 shrink-0" />
         {!collapsed ? (
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold tracking-[-0.015em] text-text">Maestro</div>
-            <div className="text-[10px] text-text-faint">Workspace local</div>
+            <div className="text-[14px] font-semibold tracking-[-0.025em] text-text">maestro</div>
+            <div className="text-[10px] text-text-faint">workspace local</div>
           </div>
         ) : null}
         <button
@@ -264,11 +264,11 @@ export function Sidebar({
               <div className="text-[11px] font-semibold text-text">Local e protegido</div>
               <div className="truncate text-[9px] text-text-faint">Dados neste dispositivo</div>
             </div>
-            <span className="size-1.5 rounded-full bg-success shadow-[0_0_8px_rgb(79_209_170/0.55)]" />
+            <span className="size-1.5 rounded-full bg-success shadow-[0_0_8px_rgb(105_201_167/0.5)]" />
           </div>
         ) : (
           <div className="mt-3 flex justify-center" title="Dados neste dispositivo">
-            <span className="size-2 rounded-full bg-success shadow-[0_0_9px_rgb(79_209_170/0.65)]" />
+            <span className="size-2 rounded-full bg-success shadow-[0_0_9px_rgb(105_201_167/0.6)]" />
           </div>
         )}
       </div>

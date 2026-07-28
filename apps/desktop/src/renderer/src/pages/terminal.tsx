@@ -25,30 +25,30 @@ export function TerminalPage({ project }: { project: Project }) {
       allowProposedApi: false,
       cursorBlink: true,
       cursorStyle: "bar",
-      fontFamily: '"JetBrains Mono", "Cascadia Code", Consolas, monospace',
+      fontFamily: '"Geist Mono Variable", "Geist Mono", "Cascadia Code", Consolas, monospace',
       fontSize: 13,
       lineHeight: 1.4,
       scrollback: 10_000,
       theme: {
-        background: "#090b11",
-        foreground: "#dfe4ed",
-        cursor: "#b6b9ff",
-        selectionBackground: "#353a6b",
-        black: "#141923",
-        red: "#f17887",
-        green: "#4fd1aa",
-        yellow: "#f2b85d",
-        blue: "#63bce7",
-        magenta: "#b6b9ff",
-        cyan: "#65d6ce",
-        white: "#d8dbe2",
+        background: "#181611",
+        foreground: "#e7e3d9",
+        cursor: "#fb4137",
+        selectionBackground: "#5b2e27",
+        black: "#201d17",
+        red: "#f17878",
+        green: "#69c9a7",
+        yellow: "#efb65d",
+        blue: "#70b7d6",
+        magenta: "#ff8d86",
+        cyan: "#7cc9c0",
+        white: "#f4f3ee",
       },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
     terminal.write(
-      "\x1b[38;5;103mMaestro Terminal\x1b[0m\r\nSelecione uma raiz e inicie uma sessão PTY.\r\n",
+      "\x1b[38;5;203mMaestro Terminal\x1b[0m\r\nSelecione uma raiz e inicie uma sessão PTY.\r\n",
     );
     terminalRef.current = terminal;
     const fitAndResize = () => {
@@ -168,7 +168,7 @@ export function TerminalPage({ project }: { project: Project }) {
       </header>
       <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-bg-elevated px-4 font-mono text-[10px] text-text-faint">
         <span
-          className={`size-1.5 rounded-full ${session ? "bg-success shadow-[0_0_8px_rgb(79_209_170/0.7)]" : "bg-text-faint"}`}
+          className={`size-1.5 rounded-full ${session ? "bg-success shadow-[0_0_8px_rgb(105_201_167/0.65)]" : "bg-text-faint"}`}
         />
         <span>{session ? session.shell : "PTY inativo"}</span>
         <span>·</span>
@@ -187,7 +187,7 @@ export function TerminalPage({ project }: { project: Project }) {
           {error}
         </div>
       ) : null}
-      <div ref={hostRef} className="min-h-0 flex-1 bg-[#090b11]" aria-label="Terminal interativo" />
+      <div ref={hostRef} className="min-h-0 flex-1 bg-[#181611]" aria-label="Terminal interativo" />
     </div>
   );
 }

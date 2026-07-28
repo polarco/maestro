@@ -1,16 +1,17 @@
+import { Waypoints } from "lucide-react";
 import { cn } from "@renderer/lib/utils";
 
 export function MaestroMark({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "relative grid size-8 place-items-center rounded-[10px] border border-primary/35 bg-gradient-to-br from-primary/22 to-primary/8 text-primary-soft shadow-[inset_0_1px_0_rgb(255_255_255/0.12),0_8px_24px_rgb(91_88_210/0.14)]",
+        "relative grid size-8 place-items-center rounded-[11px] border border-primary bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgb(255_255_255/0.16),0_10px_24px_-14px_rgb(251_65_55/0.8)]",
         className,
       )}
       aria-hidden="true"
     >
-      <span className="font-mono text-[13px] font-bold tracking-[-0.08em]">M</span>
-      <span className="absolute -right-0.5 top-1 size-1.5 rounded-full border border-bg bg-success" />
+      <Waypoints size={16} strokeWidth={2.35} />
+      <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border-2 border-sidebar bg-success" />
     </div>
   );
 }

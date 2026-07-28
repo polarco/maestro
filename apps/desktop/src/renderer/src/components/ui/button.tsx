@@ -3,12 +3,12 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@renderer/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-[10px] text-[13px] font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/65 focus-visible:ring-offset-2 focus-visible:ring-offset-bg active:translate-y-px disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-45",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-[12px] text-[13px] font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/65 focus-visible:ring-offset-2 focus-visible:ring-offset-bg active:translate-y-px disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-45",
   {
     variants: {
       variant: {
         primary:
-          "bg-primary text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.18),0_7px_20px_rgb(89_86_220/0.18)] hover:bg-primary-strong hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.18),0_9px_24px_rgb(89_86_220/0.24)] disabled:bg-primary/35 disabled:text-text-faint disabled:shadow-none",
+          "bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgb(255_255_255/0.18),0_8px_22px_-12px_rgb(251_65_55/0.72)] hover:bg-primary-strong hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.18),0_10px_26px_-12px_rgb(251_65_55/0.82)] disabled:bg-primary/35 disabled:text-text-faint disabled:shadow-none",
         secondary:
           "border border-border bg-surface-raised text-text shadow-[0_1px_1px_rgb(0_0_0/0.08)] hover:border-border-strong hover:bg-surface-hover",
         ghost: "text-text-muted hover:bg-surface-hover hover:text-text",

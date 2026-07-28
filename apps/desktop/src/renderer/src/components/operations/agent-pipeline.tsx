@@ -35,9 +35,9 @@ export function AgentPipeline({ state, compact = false }: { state: RunState; com
                   complete && "border-success/25 bg-success/12 text-success",
                   active &&
                     !approval &&
-                    "border-info/30 bg-info/12 text-info shadow-[0_0_14px_rgb(99_188_231/0.16)]",
+                    "border-info/30 bg-info/12 text-info shadow-[0_0_14px_rgb(112_183_214/0.16)]",
                   approval &&
-                    "border-warning/35 bg-warning/12 text-warning shadow-[0_0_14px_rgb(242_184_93/0.14)]",
+                    "border-warning/35 bg-warning/12 text-warning shadow-[0_0_14px_rgb(239_182_93/0.14)]",
                   !active && !complete && "border-border bg-bg-elevated",
                 )}
               >
