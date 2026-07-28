@@ -26,19 +26,13 @@ describe("GitService", () => {
     supervisor = new ProcessSupervisor();
     service = new GitService(supervisor, dataDirectory);
     await git(repository, ["init", "-b", "main"]);
+    await git(repository, ["config", "user.name", "Fixture"]);
+    await git(repository, ["config", "user.email", "fixture@local"]);
     await mkdir(path.join(repository, "allowed"));
     await writeFile(path.join(repository, "allowed", "inside.txt"), "base\n", "utf8");
     await writeFile(path.join(repository, "outside.txt"), "outside base\n", "utf8");
     await git(repository, ["add", "--all"]);
-    await git(repository, [
-      "-c",
-      "user.name=Fixture",
-      "-c",
-      "user.email=fixture@local",
-      "commit",
-      "-m",
-      "initial",
-    ]);
+    await git(repository, ["commit", "-m", "initial"]);
   });
 
   afterEach(async () => {
