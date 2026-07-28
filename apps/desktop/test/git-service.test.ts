@@ -28,6 +28,7 @@ describe("GitService", () => {
     await git(repository, ["init", "-b", "main"]);
     await git(repository, ["config", "user.name", "Fixture"]);
     await git(repository, ["config", "user.email", "fixture@local"]);
+    await git(repository, ["config", "core.autocrlf", "false"]);
     await mkdir(path.join(repository, "allowed"));
     await writeFile(path.join(repository, "allowed", "inside.txt"), "base\n", "utf8");
     await writeFile(path.join(repository, "outside.txt"), "outside base\n", "utf8");
