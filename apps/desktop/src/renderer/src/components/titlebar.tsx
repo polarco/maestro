@@ -1,12 +1,20 @@
 import { Command, Minus, Search, Square, X } from "lucide-react";
+import type { AppSettings } from "@maestro/contracts";
 import { api } from "@renderer/lib/api";
+import { ThemeToggle } from "@renderer/components/ui/theme-switcher";
 
 export function Titlebar({
   context,
   onOpenCommand,
+  theme,
+  themeDisabled,
+  onThemeChange,
 }: {
   context?: string;
   onOpenCommand?: () => void;
+  theme?: AppSettings["theme"];
+  themeDisabled?: boolean;
+  onThemeChange?: (theme: AppSettings["theme"]) => void | Promise<void>;
 }) {
   const mac = navigator.userAgent.includes("Mac");
   return (
@@ -29,6 +37,14 @@ export function Titlebar({
             {mac ? <Command size={8} /> : "Ctrl"} K
           </kbd>
         </button>
+      ) : null}
+      {theme && onThemeChange ? (
+        <ThemeToggle
+          className="no-drag mr-2"
+          value={theme}
+          disabled={themeDisabled}
+          onValueChange={(value) => void onThemeChange(value)}
+        />
       ) : null}
       <div className="no-drag flex items-center gap-0.5">
         <button

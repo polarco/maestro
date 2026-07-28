@@ -35,6 +35,7 @@ import { Badge } from "@renderer/components/ui/badge";
 import { Select, Textarea } from "@renderer/components/ui/form";
 import { LoadingPane } from "@renderer/components/ui/skeleton";
 import { ErrorPane } from "@renderer/components/ui/feedback";
+import { SuggestedActions } from "@renderer/components/ui/suggested-actions";
 import { MessageList } from "@renderer/components/conversation/message-list";
 import { PlanApprovalCard } from "@renderer/components/conversation/plan-approval";
 import { AgentPipeline } from "@renderer/components/operations/agent-pipeline";
@@ -108,6 +109,7 @@ export function ConversationPage({
   const queryClient = useQueryClient();
   const setView = useAppStore((state) => state.setView);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const query = useQuery({
     queryKey: ["conversation", id],
     queryFn: () => api().getConversation(id),
@@ -185,7 +187,7 @@ export function ConversationPage({
 
   useEffect(() => {
     const element = scrollRef.current;
-    if (element && stickToBottom.current) {
+    if (element && stickToBottom.current && (detail?.messages.length ?? 0) > 0) {
       element.scrollTop = element.scrollHeight;
       setShowJumpToBottom(false);
     }
@@ -309,34 +311,28 @@ export function ConversationPage({
       >
         <div className="mx-auto flex min-h-full max-w-[940px] flex-col px-5 py-7 md:px-7">
           {detail.messages.length === 0 ? (
-            <div className="my-auto flex flex-col items-center py-12 text-center">
-              <div className="relative grid size-16 place-items-center rounded-[19px] border border-primary/20 bg-primary/[0.08] text-primary-soft shadow-[0_16px_50px_rgb(91_88_210/0.12)]">
+            <div className="conversation-empty my-auto flex flex-col items-center py-12 text-center">
+              <div className="conversation-empty-mark relative grid size-16 place-items-center rounded-[19px] border border-primary/20 bg-primary/[0.08] text-primary-soft shadow-[0_16px_50px_rgb(91_88_210/0.12)]">
                 <BrainCircuit size={27} />
                 <span className="absolute -right-1 -top-1 size-3 rounded-full border-2 border-bg bg-success" />
               </div>
-              <div className="mt-4 rounded-full border border-border bg-surface px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-text-faint">
+              <div className="conversation-empty-mode mt-4 rounded-full border border-border bg-surface px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-text-faint">
                 Modo {activeMode.label}
               </div>
-              <h2 className="mt-4 text-[21px] font-semibold tracking-[-0.025em]">
+              <h2 className="conversation-empty-title mt-4 text-[21px] font-semibold tracking-[-0.025em]">
                 {emptyState.title}
               </h2>
               <p className="mt-2 max-w-lg text-[13px] leading-5 text-text-muted">
                 {emptyState.description}
               </p>
-              <div className="mt-7 grid w-full max-w-2xl gap-2 sm:grid-cols-3">
-                {emptyState.suggestions.map((suggestion, index) => (
-                  <button
-                    key={suggestion}
-                    className="group rounded-[12px] border border-border bg-surface p-3.5 text-left text-[11px] leading-4 text-text-muted transition-[border-color,background-color,transform] hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/[0.035] hover:text-text"
-                    onClick={() => setContent(suggestion)}
-                  >
-                    <span className="mb-2 grid size-6 place-items-center rounded-[7px] bg-bg-elevated text-[9px] font-semibold text-primary-soft group-hover:bg-primary/10">
-                      {index + 1}
-                    </span>
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
+              <SuggestedActions
+                className="conversation-suggestions mt-7 w-full max-w-2xl"
+                suggestions={emptyState.suggestions}
+                onSelect={(suggestion) => {
+                  setContent(suggestion);
+                  window.requestAnimationFrame(() => composerRef.current?.focus());
+                }}
+              />
             </div>
           ) : (
             <MessageList messages={detail.messages} />
@@ -694,6 +690,7 @@ export function ConversationPage({
               </div>
             ) : null}
             <Textarea
+              ref={composerRef}
               className="min-h-[68px] max-h-44 border-0 bg-transparent px-2.5 py-2.5 text-[14px] focus:bg-transparent focus:ring-0"
               rows={3}
               value={content}

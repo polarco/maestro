@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./app";
 import { ErrorBoundary } from "./components/error-boundary";
+import { applyTheme, readStoredTheme } from "./lib/theme";
 import "./styles.css";
+
+const storedTheme = readStoredTheme();
+if (storedTheme) applyTheme(storedTheme);
 
 const queryClient = new QueryClient({
   defaultOptions: {

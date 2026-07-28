@@ -185,9 +185,11 @@ else if (command[0] === "exec") {
     await expect(page.getByRole("heading", { name: "Projeto E2E" })).toBeVisible();
 
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
-    await page
-      .getByPlaceholder("Descreva o resultado que você quer…")
-      .fill("Execute o fluxo Maestro E2E");
+    const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
+    await page.getByRole("button", { name: /Investigue e corrija os testes que falham/ }).click();
+    await expect(maestroComposer).toHaveValue("Investigue e corrija os testes que falham");
+    await expect(maestroComposer).toBeFocused();
+    await maestroComposer.fill("Execute o fluxo Maestro E2E");
     await page.getByRole("button", { name: "Enviar" }).click();
     const runId = await waitForRun(page, "awaiting_approval");
     await expect(page.getByText("Aprovação necessária")).toBeVisible();
@@ -234,6 +236,13 @@ else if (command[0] === "exec") {
     await expect(page.getByLabel("Nome da conta").first()).toHaveValue("Conta padrão");
     await page.getByRole("button", { name: "Geral", exact: true }).click();
     await expect(page.getByText("Origem oficial de atualizações")).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Tema escuro", exact: true })).toBeChecked();
+    await page.getByText("Claro", { exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(page.getByRole("switch", { name: "Telemetria local" })).not.toBeChecked();
+    await expect(
+      page.getByRole("switch", { name: "Verificar atualizações automaticamente" }),
+    ).toBeChecked();
   } finally {
     await application?.close().catch(() => undefined);
     await new Promise<void>((resolve) => apiFixture.server.close(() => resolve()));

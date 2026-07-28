@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   Check,
@@ -29,7 +29,10 @@ import { compactPath, providerInitials } from "@renderer/lib/utils";
 import { Badge } from "@renderer/components/ui/badge";
 import { Button } from "@renderer/components/ui/button";
 import { FieldLabel, Input, Select } from "@renderer/components/ui/form";
+import { Switch } from "@renderer/components/ui/switch";
+import { ThemePicker } from "@renderer/components/ui/theme-switcher";
 import { ProviderLoginTerminal } from "@renderer/components/provider-login-terminal";
+import { applyTheme } from "@renderer/lib/theme";
 
 type SettingsTab = "connections" | "general" | "project" | "diagnostics";
 
@@ -589,14 +592,8 @@ function ProviderField({
 }) {
   if (field.type === "boolean")
     return (
-      <label className="flex items-start gap-3 rounded-[9px] border border-border bg-bg-elevated p-3">
-        <input
-          className="mt-0.5 accent-primary"
-          type="checkbox"
-          checked={Boolean(value)}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        <span>
+      <div className="flex items-center gap-3 rounded-[9px] border border-border bg-bg-elevated p-3 transition-colors hover:border-border-strong">
+        <span className="min-w-0 flex-1">
           <span className="block text-[11px] font-medium text-text">{field.label}</span>
           {field.description ? (
             <span className="mt-1 block text-[10px] leading-4 text-text-faint">
@@ -604,7 +601,8 @@ function ProviderField({
             </span>
           ) : null}
         </span>
-      </label>
+        <Switch checked={Boolean(value)} onCheckedChange={onChange} aria-label={field.label} />
+      </div>
     );
   return (
     <div>
@@ -651,7 +649,25 @@ function GeneralSettings({
   onBootstrap: (value: BootstrapPayload) => void;
 }) {
   const [settings, setSettings] = useState<AppSettings>(bootstrap.settings);
-  useEffect(() => setSettings(bootstrap.settings), [bootstrap.settings]);
+  const baselineSettings = useRef(bootstrap.settings);
+  useEffect(() => {
+    const previous = baselineSettings.current;
+    setSettings((current) => {
+      if (JSON.stringify(current) === JSON.stringify(previous)) return bootstrap.settings;
+      return { ...current, theme: bootstrap.settings.theme };
+    });
+    baselineSettings.current = bootstrap.settings;
+  }, [bootstrap.settings]);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const preview = () => applyTheme(settings.theme);
+    preview();
+    media.addEventListener("change", preview);
+    return () => {
+      media.removeEventListener("change", preview);
+      applyTheme(bootstrap.settings.theme);
+    };
+  }, [settings.theme, bootstrap.settings.theme]);
   const save = useMutation({
     mutationFn: () => api().updateSettings(settings),
     onSuccess: async () => onBootstrap(await api().bootstrap()),
@@ -669,6 +685,16 @@ function GeneralSettings({
       />
       <section className="panel mt-6 p-5 md:p-6">
         <div className="grid gap-5 lg:grid-cols-2">
+          <div className="lg:col-span-2">
+            <FieldLabel>Aparência</FieldLabel>
+            <ThemePicker
+              value={settings.theme}
+              onValueChange={(theme) => setSettings({ ...settings, theme })}
+            />
+            <p className="mt-2 text-[10px] text-text-faint">
+              A prévia é instantânea. Salve as preferências para manter a escolha.
+            </p>
+          </div>
           <div>
             <FieldLabel>Idioma</FieldLabel>
             <Select
@@ -680,20 +706,6 @@ function GeneralSettings({
             >
               <option value="pt-BR">Português (Brasil)</option>
               <option value="en">English</option>
-            </Select>
-          </div>
-          <div>
-            <FieldLabel>Aparência</FieldLabel>
-            <Select
-              className="w-full"
-              value={settings.theme}
-              onChange={(event) =>
-                setSettings({ ...settings, theme: event.target.value as AppSettings["theme"] })
-              }
-            >
-              <option value="dark">Escuro</option>
-              <option value="light">Claro</option>
-              <option value="system">Sistema</option>
             </Select>
           </div>
           <div>
@@ -778,41 +790,35 @@ function GeneralSettings({
             <Badge tone="success">Verificada</Badge>
           </div>
         </div>
-        <label className="mt-5 flex items-start gap-3 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
-          <input
-            className="mt-0.5 accent-primary"
-            type="checkbox"
-            checked={settings.telemetryEnabled}
-            onChange={(event) =>
-              setSettings({ ...settings, telemetryEnabled: event.target.checked })
-            }
-          />
-          <span>
+        <div className="mt-5 flex items-center gap-4 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
+          <span className="min-w-0 flex-1">
             <span className="block text-[12px] font-semibold">Telemetria local</span>
-            <span className="mt-1 block text-[10px] text-text-faint">
+            <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               Calcula métricas no dispositivo. Nenhum envio remoto é realizado pelo Maestro.
             </span>
           </span>
-        </label>
-        <label className="mt-3 flex items-start gap-3 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
-          <input
-            className="mt-0.5 accent-primary"
-            type="checkbox"
-            checked={settings.autoUpdateEnabled}
-            onChange={(event) =>
-              setSettings({ ...settings, autoUpdateEnabled: event.target.checked })
-            }
+          <Switch
+            checked={settings.telemetryEnabled}
+            onCheckedChange={(telemetryEnabled) => setSettings({ ...settings, telemetryEnabled })}
+            aria-label="Telemetria local"
           />
-          <span>
+        </div>
+        <div className="mt-3 flex items-center gap-4 rounded-[11px] border border-border bg-bg-elevated p-3.5 transition-colors hover:border-border-strong">
+          <span className="min-w-0 flex-1">
             <span className="block text-[12px] font-semibold">
               Verificar atualizações automaticamente
             </span>
-            <span className="mt-1 block text-[10px] text-text-faint">
+            <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               Verifica ao iniciar e a cada seis horas; download e instalação são oferecidos antes de
               acontecer.
             </span>
           </span>
-        </label>
+          <Switch
+            checked={settings.autoUpdateEnabled}
+            onCheckedChange={(autoUpdateEnabled) => setSettings({ ...settings, autoUpdateEnabled })}
+            aria-label="Verificar atualizações automaticamente"
+          />
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 rounded-[11px] border border-border bg-bg-elevated p-3.5">
           <RefreshCcw
             size={12}

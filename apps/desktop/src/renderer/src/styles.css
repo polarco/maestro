@@ -12,7 +12,7 @@
   --color-border-strong: #374255;
   --color-text: #f5f7fb;
   --color-text-muted: #a5adbc;
-  --color-text-faint: #7d889a;
+  --color-text-faint: #808b9d;
   --color-primary: #7c83f7;
   --color-primary-strong: #6870ea;
   --color-primary-soft: #b6b9ff;
@@ -48,7 +48,14 @@
   --color-border-strong: #c8d0dd;
   --color-text: #151a24;
   --color-text-muted: #566173;
-  --color-text-faint: #6f7a8b;
+  --color-text-faint: #606c7f;
+  --color-primary: #6269e8;
+  --color-primary-strong: #5159d7;
+  --color-primary-soft: #4f56c9;
+  --color-success: #187f63;
+  --color-warning: #9b650f;
+  --color-danger: #c63f53;
+  --color-info: #247ba6;
   color-scheme: light;
   --panel-shadow: 0 1px 2px rgb(15 23 42 / 0.035), 0 14px 38px rgb(15 23 42 / 0.045);
 }
@@ -133,6 +140,11 @@ select option {
   background: var(--color-surface-hover);
 }
 
+.theme-option:has(input:focus-visible) {
+  outline: 2px solid rgb(124 131 247 / 0.78);
+  outline-offset: 2px;
+}
+
 .sidebar-nav {
   display: flex;
   width: 100%;
@@ -172,6 +184,33 @@ select option {
 @media (min-width: 900px) {
   .onboarding-benefits {
     grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-height: 760px) {
+  .conversation-empty {
+    margin-block: 0;
+    padding-block: 20px;
+  }
+
+  .conversation-empty-mark {
+    display: none;
+  }
+
+  .conversation-empty-mode {
+    margin-top: 0;
+  }
+
+  .conversation-empty-title {
+    margin-top: 12px;
+  }
+
+  .conversation-suggestions {
+    margin-top: 18px;
+  }
+
+  .conversation-suggestions button {
+    min-height: 84px;
   }
 }
 

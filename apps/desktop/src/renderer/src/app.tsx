@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { BootstrapPayload, ProviderSummary, RunMode } from "@maestro/contracts";
+import type { AppSettings, BootstrapPayload, ProviderSummary, RunMode } from "@maestro/contracts";
 import { api } from "@renderer/lib/api";
 import { useLiveEvents } from "@renderer/hooks/use-live-events";
 import { useAppStore } from "@renderer/store/app-store";
@@ -17,6 +17,7 @@ import { Onboarding } from "@renderer/pages/onboarding";
 import { RunPage } from "@renderer/pages/run";
 import { SettingsPage } from "@renderer/pages/settings";
 import { TerminalPage } from "@renderer/pages/terminal";
+import { applyTheme, storeTheme } from "@renderer/lib/theme";
 
 function usable(provider: ProviderSummary, mode: RunMode): boolean {
   if (provider.health.status !== "ready") return false;
@@ -48,6 +49,7 @@ export default function App() {
   const setView = useAppStore((state) => state.setView);
   const [commandOpen, setCommandOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [themeSaving, setThemeSaving] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem("maestro.sidebar-collapsed") === "true",
   );
@@ -62,6 +64,38 @@ export default function App() {
     const value = await api().bootstrap();
     setBootstrap(value);
   }, [setBootstrap]);
+  const changeTheme = useCallback(
+    async (theme: AppSettings["theme"]) => {
+      if (themeSaving) return;
+      const current = queryClient.getQueryData<BootstrapPayload>(["bootstrap"]);
+      if (!current || current.settings.theme === theme) return;
+      const previousTheme = current.settings.theme;
+      setThemeSaving(true);
+      setActionError(null);
+      applyTheme(theme);
+      storeTheme(theme);
+      queryClient.setQueryData<BootstrapPayload>(["bootstrap"], {
+        ...current,
+        settings: { ...current.settings, theme },
+      });
+      try {
+        const settings = await api().updateSettings({ theme });
+        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (value) =>
+          value ? { ...value, settings } : value,
+        );
+      } catch (error) {
+        applyTheme(previousTheme);
+        storeTheme(previousTheme);
+        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (value) =>
+          value ? { ...value, settings: { ...value.settings, theme: previousTheme } } : value,
+        );
+        setActionError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setThemeSaving(false);
+      }
+    },
+    [queryClient, themeSaving],
+  );
   const newConversation = useCallback(async () => {
     setActionError(null);
     try {
@@ -124,15 +158,10 @@ export default function App() {
   useEffect(() => {
     const bootstrap = query.data;
     if (!bootstrap) return;
-    const root = document.documentElement;
     const media = window.matchMedia("(prefers-color-scheme: light)");
     const apply = () => {
-      root.dataset.theme =
-        bootstrap.settings.theme === "system"
-          ? media.matches
-            ? "light"
-            : "dark"
-          : bootstrap.settings.theme;
+      applyTheme(bootstrap.settings.theme);
+      storeTheme(bootstrap.settings.theme);
     };
     apply();
     media.addEventListener("change", apply);
@@ -182,7 +211,11 @@ export default function App() {
   if (bootstrap.projects.length === 0)
     return (
       <div className="app-canvas flex h-screen flex-col">
-        <Titlebar />
+        <Titlebar
+          theme={bootstrap.settings.theme}
+          themeDisabled={themeSaving}
+          onThemeChange={changeTheme}
+        />
         <Onboarding onCreated={() => void refresh()} />
       </div>
     );
@@ -230,7 +263,13 @@ export default function App() {
 
   return (
     <div className="app-canvas flex h-screen flex-col text-text">
-      <Titlebar context={project.name} onOpenCommand={() => setCommandOpen(true)} />
+      <Titlebar
+        context={project.name}
+        onOpenCommand={() => setCommandOpen(true)}
+        theme={bootstrap.settings.theme}
+        themeDisabled={themeSaving}
+        onThemeChange={changeTheme}
+      />
       <UpdateBanner state={bootstrap.update} />
       <div className="flex min-h-0 flex-1">
         <Sidebar
