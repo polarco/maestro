@@ -339,8 +339,8 @@ export class ApplicationService {
     return this.updates.download();
   }
 
-  installUpdate(): void {
-    this.updates.install();
+  installUpdate(): Promise<void> {
+    return this.updates.install();
   }
 
   createTerminal(projectId: string, workspaceRootId: string): Promise<TerminalSessionDto> {

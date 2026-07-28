@@ -1,8 +1,8 @@
-import { app } from "electron";
+import { app, shell } from "electron";
 import electronUpdater from "electron-updater";
 import type { AppSettings, UpdateState } from "@maestro/contracts";
 import { MaestroError, errorMessage } from "@maestro/core";
-import { resolveUpdateChannel } from "./update-policy.js";
+import { resolveUpdateChannel, resolveUpdateInstallStrategy } from "./update-policy.js";
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const { autoUpdater } = electronUpdater;
@@ -11,6 +11,7 @@ export class UpdateService {
   readonly #emit: (state: UpdateState) => void;
   #timer: NodeJS.Timeout | null = null;
   #initialTimer: NodeJS.Timeout | null = null;
+  #downloadedUpdateFile: string | null = null;
   #enabled = true;
   #state: UpdateState = {
     status: "idle",
@@ -19,33 +20,38 @@ export class UpdateService {
     progress: null,
     message: "Canal Estável selecionado.",
     checkedAt: null,
+    installStrategy: "automatic",
   };
 
   constructor(emit: (state: UpdateState) => void) {
     this.#emit = emit;
     autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.on("checking-for-update", () =>
       this.#set({ status: "checking", progress: null, message: "Verificando atualizações…" }),
     );
-    autoUpdater.on("update-available", (info) =>
+    autoUpdater.on("update-available", (info) => {
+      this.#downloadedUpdateFile = null;
       this.#set({
         status: "available",
         availableVersion: info.version,
         progress: null,
         message: `Maestro ${info.version} está disponível.`,
         checkedAt: new Date().toISOString(),
-      }),
-    );
-    autoUpdater.on("update-not-available", () =>
+        installStrategy: "automatic",
+      });
+    });
+    autoUpdater.on("update-not-available", () => {
+      this.#downloadedUpdateFile = null;
       this.#set({
         status: "not-available",
         availableVersion: null,
         progress: null,
         message: "Você já está usando a versão mais recente.",
         checkedAt: new Date().toISOString(),
-      }),
-    );
+        installStrategy: "automatic",
+      });
+    });
     autoUpdater.on("download-progress", (progress) =>
       this.#set({
         status: "downloading",
@@ -53,14 +59,19 @@ export class UpdateService {
         message: `Baixando atualização… ${Math.round(progress.percent)}%`,
       }),
     );
-    autoUpdater.on("update-downloaded", (info) =>
+    autoUpdater.on("update-downloaded", (info) => {
+      this.#downloadedUpdateFile = info.downloadedFile;
       this.#set({
         status: "downloaded",
         availableVersion: info.version,
         progress: 100,
-        message: "Atualização pronta para instalar e reiniciar.",
-      }),
-    );
+        message:
+          resolveUpdateInstallStrategy(process.platform, info.downloadedFile) === "system-installer"
+            ? "Atualização pronta para abrir no instalador do sistema."
+            : "Atualização pronta para instalar e reiniciar.",
+        installStrategy: resolveUpdateInstallStrategy(process.platform, info.downloadedFile),
+      });
+    });
     autoUpdater.on("error", (error) =>
       this.#set({
         status: "error",
@@ -135,16 +146,40 @@ export class UpdateService {
       );
     }
     this.#set({ status: "downloading", progress: 0, message: "Iniciando download…" });
-    await autoUpdater.downloadUpdate();
+    const downloadedFiles = await autoUpdater.downloadUpdate();
+    this.#downloadedUpdateFile =
+      downloadedFiles.find((file) => file.toLowerCase().endsWith(".deb")) ??
+      downloadedFiles[0] ??
+      this.#downloadedUpdateFile;
     return this.state;
   }
 
-  install(): void {
-    if (this.#state.status !== "downloaded") {
+  async install(): Promise<void> {
+    const retryingSystemInstaller =
+      this.#state.status === "installing" && this.#state.installStrategy === "system-installer";
+    if (this.#state.status !== "downloaded" && !retryingSystemInstaller) {
       throw new MaestroError("UPDATE_NOT_DOWNLOADED", "Baixe a atualização antes de instalar.", {
         recoverable: true,
       });
     }
+
+    if (this.#state.installStrategy === "system-installer" && this.#downloadedUpdateFile !== null) {
+      const openError = await shell.openPath(this.#downloadedUpdateFile);
+      if (openError) {
+        shell.showItemInFolder(this.#downloadedUpdateFile);
+        this.#set({
+          status: "installing",
+          message: "O pacote .deb foi exibido na pasta. Abra-o para concluir a atualização.",
+        });
+        return;
+      }
+      this.#set({
+        status: "installing",
+        message: "Instalador do sistema aberto. Conclua a instalação e reinicie o Maestro.",
+      });
+      return;
+    }
+
     autoUpdater.quitAndInstall(false, true);
   }
 

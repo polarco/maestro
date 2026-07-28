@@ -15,12 +15,20 @@ import type { ProviderConnectionSummary, ProviderSummary } from "./provider.js";
 
 export interface UpdateState {
   status:
-    "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error";
+    | "idle"
+    | "checking"
+    | "available"
+    | "not-available"
+    | "downloading"
+    | "downloaded"
+    | "installing"
+    | "error";
   currentVersion: string;
   availableVersion: string | null;
   progress: number | null;
   message: string;
   checkedAt: string | null;
+  installStrategy: "automatic" | "system-installer";
 }
 
 export interface VaultStatus {

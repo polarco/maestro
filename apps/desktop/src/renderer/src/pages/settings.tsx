@@ -810,7 +810,7 @@ function GeneralSettings({
             </span>
             <span className="mt-1 block text-[10px] leading-4 text-text-faint">
               Verifica ao iniciar e a cada seis horas; download e instalação são oferecidos antes de
-              acontecer.
+              acontecer. No Linux instalado por .deb, o Maestro abre o instalador do sistema.
             </span>
           </span>
           <Switch

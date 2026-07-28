@@ -26,3 +26,12 @@ export const UPDATE_CHANNELS = Object.freeze({
 export function resolveUpdateChannel(channel: AppSettings["updateChannel"]) {
   return UPDATE_CHANNELS[channel];
 }
+
+export function resolveUpdateInstallStrategy(
+  platform: NodeJS.Platform,
+  downloadedFile: string | null,
+): "automatic" | "system-installer" {
+  return platform === "linux" && downloadedFile?.toLowerCase().endsWith(".deb")
+    ? "system-installer"
+    : "automatic";
+}

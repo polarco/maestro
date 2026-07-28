@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { appSettingsSchema } from "@maestro/contracts";
 import {
   resolveUpdateChannel,
+  resolveUpdateInstallStrategy,
   UPDATE_CHANNELS,
   UPDATE_REPOSITORY,
 } from "../src/main/services/update-policy.js";
@@ -36,5 +37,14 @@ describe("update channel policy", () => {
       updateFeedUrl: "https://untrusted.example.com/releases",
     });
     expect(parsed).not.toHaveProperty("updateFeedUrl");
+  });
+
+  it("opens deb updates with the system installer instead of invoking pkexec directly", () => {
+    expect(resolveUpdateInstallStrategy("linux", "/tmp/Maestro-0.4.0-linux-amd64.deb")).toBe(
+      "system-installer",
+    );
+    expect(resolveUpdateInstallStrategy("linux", "/tmp/Maestro.AppImage")).toBe("automatic");
+    expect(resolveUpdateInstallStrategy("win32", "C:\\Temp\\Maestro.deb")).toBe("automatic");
+    expect(resolveUpdateInstallStrategy("linux", null)).toBe("automatic");
   });
 });
