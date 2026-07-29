@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { appSettingsSchema } from "@maestro/contracts";
 import {
+  configureUpdaterPolicy,
+  isUpdateVersionAllowed,
   resolveUpdateChannel,
   resolveUpdateInstallStrategy,
   UPDATE_CHANNELS,
@@ -29,6 +31,48 @@ describe("update channel policy", () => {
       allowPrerelease: true,
       label: "Beta",
     });
+  });
+
+  it("only accepts strictly newer versions from the selected channel", () => {
+    expect(isUpdateVersionAllowed("0.4.0", "0.4.1", "stable")).toBe(true);
+    expect(isUpdateVersionAllowed("0.4.0", "0.4.0", "stable")).toBe(false);
+    expect(isUpdateVersionAllowed("0.4.0", "0.3.9", "stable")).toBe(false);
+    expect(isUpdateVersionAllowed("0.4.0", "0.5.0-beta.1", "stable")).toBe(false);
+
+    expect(isUpdateVersionAllowed("0.5.0-beta.1", "0.5.0-beta.2", "beta")).toBe(true);
+    expect(isUpdateVersionAllowed("0.5.0-beta.2", "0.5.0-beta.1", "beta")).toBe(false);
+    expect(isUpdateVersionAllowed("0.5.0-beta.2", "0.5.0-beta.2", "beta")).toBe(false);
+    expect(isUpdateVersionAllowed("0.5.0-beta.1", "0.5.0", "beta")).toBe(false);
+    expect(isUpdateVersionAllowed("0.5.0-beta.2", "0.6.0-beta.1", "beta")).toBe(true);
+    expect(isUpdateVersionAllowed("0.5.0-beta.2", "0.5.0-beta.10", "beta")).toBe(true);
+    expect(isUpdateVersionAllowed("invalid", "0.6.0-beta.1", "beta")).toBe(false);
+  });
+
+  it("re-disables downgrades after electron-updater changes the channel", async () => {
+    class FakeUpdater {
+      allowPrerelease = false;
+      allowDowngrade = false;
+      isUpdateSupported: (info: { version: string }) => boolean | Promise<boolean> = () => true;
+      #channel: string | null = null;
+
+      get channel(): string | null {
+        return this.#channel;
+      }
+
+      set channel(value: string | null) {
+        this.#channel = value;
+        this.allowDowngrade = true;
+      }
+    }
+
+    const updater = new FakeUpdater();
+    configureUpdaterPolicy(updater, "0.5.0-beta.2", "beta");
+    expect(updater.channel).toBe("beta");
+    expect(updater.allowPrerelease).toBe(true);
+    expect(updater.allowDowngrade).toBe(false);
+    expect(await updater.isUpdateSupported({ version: "0.5.0-beta.3" })).toBe(true);
+    expect(await updater.isUpdateSupported({ version: "0.5.0-beta.1" })).toBe(false);
+    expect(await updater.isUpdateSupported({ version: "0.5.0" })).toBe(false);
   });
 
   it("drops the legacy custom feed instead of persisting arbitrary origins", () => {

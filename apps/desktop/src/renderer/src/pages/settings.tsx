@@ -844,7 +844,7 @@ function GeneralSettings({
           <div>
             <SettingLabel
               htmlFor="settings-update-channel"
-              help="Estável recebe somente versões finais. Beta também recebe prévias, que podem trazer recursos antes, mas têm maior chance de instabilidade."
+              help="Estável recebe somente versões finais. Beta recebe somente novas prévias beta, que podem trazer recursos antes, mas têm maior chance de instabilidade."
             >
               Canal de atualização
             </SettingLabel>
@@ -865,7 +865,7 @@ function GeneralSettings({
             <p className="mt-1.5 text-[10px] text-text-faint">
               {settings.updateChannel === "stable"
                 ? "Receba somente versões finais recomendadas."
-                : "Receba prévias antecipadas e também versões estáveis."}
+                : "Receba somente prévias beta mais novas; versões estáveis e anteriores são ignoradas."}
             </p>
           </div>
           <div className="flex items-center gap-3 rounded-[11px] border border-success/20 bg-success/[0.055] p-3.5">

@@ -57,6 +57,8 @@ Para gerar metadados do canal beta, use `pnpm package:linux:beta` ou
 `pnpm package:windows:beta`. O aplicativo aceita somente os canais internos
 `stable` e `beta`; ambos usam exclusivamente as releases públicas de
 [`polarco/maestro`](https://github.com/polarco/maestro/releases), sem URL de feed configurável.
+Os canais são estritos: `stable` ignora prévias, `beta` ignora releases estáveis, e nenhum deles
+aceita versões iguais ou anteriores à instalada.
 
 Tags `vX.Y.Z` publicam o canal estável. Tags `vX.Y.Z-beta.N` publicam o canal beta. A versão da
 tag precisa coincidir com `apps/desktop/package.json`; o workflow `.github/workflows/release.yml`

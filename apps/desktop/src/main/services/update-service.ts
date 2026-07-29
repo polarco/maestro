@@ -2,7 +2,11 @@ import { app, shell } from "electron";
 import electronUpdater from "electron-updater";
 import type { AppSettings, UpdateState } from "@maestro/contracts";
 import { MaestroError, errorMessage } from "@maestro/core";
-import { resolveUpdateChannel, resolveUpdateInstallStrategy } from "./update-policy.js";
+import {
+  configureUpdaterPolicy,
+  isUpdateVersionAllowed,
+  resolveUpdateInstallStrategy,
+} from "./update-policy.js";
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const { autoUpdater } = electronUpdater;
@@ -13,6 +17,7 @@ export class UpdateService {
   #initialTimer: NodeJS.Timeout | null = null;
   #downloadedUpdateFile: string | null = null;
   #enabled = true;
+  #channel: AppSettings["updateChannel"] = "stable";
   #state: UpdateState = {
     status: "idle",
     currentVersion: app.getVersion(),
@@ -31,6 +36,10 @@ export class UpdateService {
       this.#set({ status: "checking", progress: null, message: "Verificando atualizações…" }),
     );
     autoUpdater.on("update-available", (info) => {
+      if (!this.#allows(info.version)) {
+        this.#notAvailable();
+        return;
+      }
       this.#downloadedUpdateFile = null;
       this.#set({
         status: "available",
@@ -41,17 +50,7 @@ export class UpdateService {
         installStrategy: "automatic",
       });
     });
-    autoUpdater.on("update-not-available", () => {
-      this.#downloadedUpdateFile = null;
-      this.#set({
-        status: "not-available",
-        availableVersion: null,
-        progress: null,
-        message: "Você já está usando a versão mais recente.",
-        checkedAt: new Date().toISOString(),
-        installStrategy: "automatic",
-      });
-    });
+    autoUpdater.on("update-not-available", () => this.#notAvailable());
     autoUpdater.on("download-progress", (progress) =>
       this.#set({
         status: "downloading",
@@ -60,6 +59,10 @@ export class UpdateService {
       }),
     );
     autoUpdater.on("update-downloaded", (info) => {
+      if (!this.#allows(info.version)) {
+        this.#notAvailable();
+        return;
+      }
       this.#downloadedUpdateFile = info.downloadedFile;
       this.#set({
         status: "downloaded",
@@ -88,9 +91,8 @@ export class UpdateService {
 
   configure(settings: AppSettings): void {
     this.#enabled = settings.autoUpdateEnabled;
-    const channel = resolveUpdateChannel(settings.updateChannel);
-    autoUpdater.allowPrerelease = channel.allowPrerelease;
-    autoUpdater.channel = channel.updaterChannel;
+    this.#channel = settings.updateChannel;
+    const channel = configureUpdaterPolicy(autoUpdater, this.#state.currentVersion, this.#channel);
     this.#clearTimers();
     if (!app.isPackaged) {
       this.#set({
@@ -199,6 +201,22 @@ export class UpdateService {
   #set(values: Partial<UpdateState>): void {
     this.#state = { ...this.#state, ...values };
     this.#emit(this.state);
+  }
+
+  #allows(candidateVersion: string): boolean {
+    return isUpdateVersionAllowed(this.#state.currentVersion, candidateVersion, this.#channel);
+  }
+
+  #notAvailable(): void {
+    this.#downloadedUpdateFile = null;
+    this.#set({
+      status: "not-available",
+      availableVersion: null,
+      progress: null,
+      message: "Você já está usando a versão mais recente deste canal.",
+      checkedAt: new Date().toISOString(),
+      installStrategy: "automatic",
+    });
   }
 
   #clearTimers(): void {
