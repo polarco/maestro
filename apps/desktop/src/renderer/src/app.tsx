@@ -33,8 +33,10 @@ function preferredProvider(
   bootstrap: BootstrapPayload,
   mode: RunMode,
 ): ProviderSummary | undefined {
-  const role = mode === "maestro" ? "planner" : mode === "agent" ? "implementer" : "chat";
-  const preferred = bootstrap.settings.defaultModels[role];
+  const role = mode === "maestro" ? "maestro" : mode === "agent" ? "implementer" : "chat";
+  const preferred =
+    bootstrap.settings.defaultModels[role] ??
+    (mode === "maestro" ? bootstrap.settings.defaultModels.planner : undefined);
   return (
     bootstrap.providers.find(
       (provider) => provider.descriptor.id === preferred?.providerId && usable(provider, mode),
@@ -114,8 +116,8 @@ export default function App() {
       const provider = preferredProvider(bootstrap, mode);
       const requested =
         bootstrap.settings.defaultModels[
-          mode === "maestro" ? "planner" : mode === "agent" ? "implementer" : "chat"
-        ];
+          mode === "maestro" ? "maestro" : mode === "agent" ? "implementer" : "chat"
+        ] ?? (mode === "maestro" ? bootstrap.settings.defaultModels.planner : undefined);
       const model =
         provider?.models.find((item) => item.id === requested?.modelId) ??
         provider?.models.find((item) => item.isDefault) ??

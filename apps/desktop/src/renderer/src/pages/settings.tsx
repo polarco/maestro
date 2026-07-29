@@ -1,12 +1,15 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
+  Bot,
   Check,
-  CreditCard,
   FolderPlus,
+  GripVertical,
   KeyRound,
   Link2,
+  ListOrdered,
   LockKeyhole,
+  Pencil,
   Plus,
   Power,
   RefreshCcw,
@@ -19,6 +22,7 @@ import {
 import type {
   AppSettings,
   BootstrapPayload,
+  ModelSelection,
   Project,
   ProviderConfigField,
   ProviderConnectionSummary,
@@ -44,6 +48,11 @@ const healthLabels: Record<ProviderSummary["health"]["status"], string> = {
   degraded: "Instável",
   checking: "Verificando",
 };
+
+const accountProviderDetails = {
+  codex: { company: "OpenAI", product: "Codex", initials: "CX" },
+  "claude-code": { company: "Anthropic", product: "Claude Code", initials: "CL" },
+} as const;
 
 export function SettingsPage({
   bootstrap,
@@ -97,7 +106,7 @@ export function SettingsPage({
               <>
                 <SettingsHeader
                   title="Conexões"
-                  description="Trabalhadores usam somente assinaturas isoladas. API paga é exclusiva do orquestrador."
+                  description="Escolha quem coordena o Maestro e organize, em ordem, as contas usadas pelos agentes."
                   action={
                     <Button
                       size="sm"
@@ -113,15 +122,17 @@ export function SettingsPage({
                 {bootstrap.vault.backend === "password-vault" && bootstrap.vault.locked ? (
                   <VaultUnlock bootstrap={bootstrap} onBootstrap={onBootstrap} />
                 ) : null}
-                <SubscriptionAccounts
+                <MaestroAccount bootstrap={bootstrap} onBootstrap={onBootstrap} />
+                <AgentAccounts
                   bootstrap={bootstrap}
                   onBootstrap={onBootstrap}
                   onLogin={setLoginConnectionId}
                 />
                 <div className="mt-7">
-                  <h3 className="text-[13px] font-semibold">Executáveis e API do orquestrador</h3>
+                  <h3 className="text-[13px] font-semibold">Provedores e credenciais</h3>
                   <p className="mt-1 text-[10px] text-text-faint">
-                    Configurações de API nunca são usadas por chat, agente direto ou tarefas do DAG.
+                    Configure as APIs disponíveis para o Maestro e os executáveis das contas dos
+                    agentes. APIs pagas nunca são usadas nas tarefas do DAG.
                   </p>
                 </div>
                 <div className="mt-5 space-y-4">
@@ -165,7 +176,252 @@ export function SettingsPage({
   );
 }
 
-function SubscriptionAccounts({
+interface MaestroTarget {
+  key: string;
+  providerId: string;
+  connectionId: string | null;
+  displayName: string;
+  providerName: string;
+  kind: "api" | "local" | "account";
+  status: ProviderSummary["health"]["status"];
+  message: string;
+  models: Array<{ id: string; name: string; isDefault?: boolean }>;
+}
+
+function MaestroAccount({
+  bootstrap,
+  onBootstrap,
+}: {
+  bootstrap: BootstrapPayload;
+  onBootstrap: (value: BootstrapPayload) => void;
+}) {
+  const targets: MaestroTarget[] = [
+    ...bootstrap.providers
+      .filter((provider) => provider.descriptor.kind !== "cli")
+      .map((provider) => ({
+        key: `provider:${provider.descriptor.id}`,
+        providerId: provider.descriptor.id,
+        connectionId: null,
+        displayName: provider.descriptor.name,
+        providerName: provider.descriptor.name,
+        kind: provider.descriptor.kind as "api" | "local",
+        status: provider.health.status,
+        message: provider.health.message,
+        models: provider.models,
+      })),
+    ...bootstrap.providerConnections.map((account) => {
+      const provider = bootstrap.providers.find(
+        (item) => item.descriptor.id === account.connection.providerId,
+      );
+      const details = accountProviderDetails[account.connection.providerId];
+      return {
+        key: `connection:${account.connection.id}`,
+        providerId: account.connection.providerId,
+        connectionId: account.connection.id,
+        displayName: account.connection.name,
+        providerName: `${details.company} · ${details.product}`,
+        kind: "account" as const,
+        status: account.health.status,
+        message: account.health.message,
+        models: account.models.length > 0 ? account.models : (provider?.models ?? []),
+      };
+    }),
+  ];
+  const persistedSelection =
+    bootstrap.settings.defaultModels.maestro ??
+    bootstrap.settings.defaultModels.planner ??
+    bootstrap.settings.defaultModels.analyst;
+  const [selection, setSelection] = useState<ModelSelection | undefined>(persistedSelection);
+  useEffect(() => setSelection(persistedSelection), [persistedSelection]);
+
+  const selectedTarget =
+    targets.find(
+      (target) =>
+        target.providerId === selection?.providerId &&
+        target.connectionId === (selection.connectionId ?? null),
+    ) ??
+    targets.find(
+      (target) => target.providerId === selection?.providerId && target.connectionId === null,
+    ) ??
+    targets.find(
+      (target) => target.providerId === selection?.providerId && target.kind === "account",
+    ) ??
+    targets.find((target) => target.status === "ready") ??
+    targets[0];
+  const modelOptions = selectedTarget
+    ? [
+        ...(selection?.providerId === selectedTarget.providerId &&
+        selection.modelId &&
+        !selectedTarget.models.some((model) => model.id === selection.modelId)
+          ? [{ id: selection.modelId, name: `${selection.modelId} (seleção atual)` }]
+          : []),
+        ...selectedTarget.models,
+      ]
+    : [];
+  const reload = async () => onBootstrap(await api().bootstrap());
+  const save = useMutation({
+    mutationFn: (next: ModelSelection) =>
+      api().updateSettings({
+        defaultModels: { ...bootstrap.settings.defaultModels, maestro: next },
+      }),
+    onSuccess: reload,
+    onError: () => setSelection(persistedSelection),
+  });
+  const persist = (next: ModelSelection) => {
+    setSelection(next);
+    save.mutate(next);
+  };
+  const statusTone =
+    selectedTarget?.status === "ready"
+      ? "success"
+      : selectedTarget?.status === "unauthenticated"
+        ? "warning"
+        : "danger";
+
+  return (
+    <section className="panel mt-6 overflow-hidden border-primary/25">
+      <div className="flex flex-wrap items-start gap-4 border-b border-primary/15 bg-primary/[0.045] p-5 md:p-6">
+        <div className="grid size-11 shrink-0 place-items-center rounded-[13px] border border-primary/20 bg-primary/10 text-primary-soft">
+          <Bot size={20} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-[15px] font-semibold">Conta/API principal do Maestro</h3>
+            <Badge tone="primary">coordenação</Badge>
+            <InfoTooltip
+              content="Esta escolha é usada pelo Maestro para analisar pedidos e montar ou revisar planos. As tarefas criadas por ele continuam usando a fila de contas abaixo."
+              label="Ajuda sobre a conta principal do Maestro"
+            />
+          </div>
+          <p className="mt-1.5 max-w-2xl text-[11px] leading-5 text-text-muted">
+            É a identidade que pensa e coordena. Pode ser uma API configurada ou uma das contas de
+            assinatura conectadas.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1.25fr)_minmax(180px,.75fr)] md:p-6">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <SettingLabel
+              htmlFor="maestro-primary-account"
+              help="Define o provedor e, no caso de uma assinatura, o perfil isolado usado nas etapas de análise e planejamento do Maestro."
+            >
+              Conta ou API
+            </SettingLabel>
+            <Select
+              id="maestro-primary-account"
+              className="w-full"
+              value={selectedTarget?.key ?? ""}
+              disabled={targets.length === 0 || save.isPending}
+              onChange={(event) => {
+                const target = targets.find((item) => item.key === event.target.value);
+                if (!target) return;
+                const modelId =
+                  target.models.find((model) => model.isDefault)?.id ??
+                  target.models[0]?.id ??
+                  (selection?.providerId === target.providerId ? selection.modelId : "default");
+                persist({
+                  providerId: target.providerId,
+                  ...(target.connectionId ? { connectionId: target.connectionId } : {}),
+                  modelId,
+                  effort: selection?.effort ?? "high",
+                });
+              }}
+            >
+              {targets.filter((target) => target.kind !== "account").length > 0 ? (
+                <optgroup label="APIs e provedores locais">
+                  {targets
+                    .filter((target) => target.kind !== "account")
+                    .map((target) => (
+                      <option key={target.key} value={target.key}>
+                        {target.kind === "local" ? "Local" : "API"} · {target.providerName} ·{" "}
+                        {healthLabels[target.status]}
+                      </option>
+                    ))}
+                </optgroup>
+              ) : null}
+              {targets.some((target) => target.kind === "account") ? (
+                <optgroup label="Contas por assinatura">
+                  {targets
+                    .filter((target) => target.kind === "account")
+                    .map((target) => (
+                      <option key={target.key} value={target.key}>
+                        {target.providerName} · {target.displayName}
+                      </option>
+                    ))}
+                </optgroup>
+              ) : null}
+            </Select>
+          </div>
+          <div>
+            <SettingLabel
+              htmlFor="maestro-primary-model"
+              help="Modelo usado pelo Maestro para estruturar a análise e gerar o plano antes da execução pelos agentes."
+            >
+              Modelo do Maestro
+            </SettingLabel>
+            <Select
+              id="maestro-primary-model"
+              className="w-full"
+              value={selection?.modelId ?? modelOptions[0]?.id ?? ""}
+              disabled={!selectedTarget || modelOptions.length === 0 || save.isPending}
+              onChange={(event) => {
+                if (!selectedTarget) return;
+                persist({
+                  providerId: selectedTarget.providerId,
+                  ...(selectedTarget.connectionId
+                    ? { connectionId: selectedTarget.connectionId }
+                    : {}),
+                  modelId: event.target.value,
+                  effort: selection?.effort ?? "high",
+                });
+              }}
+            >
+              {modelOptions.length > 0 ? (
+                modelOptions.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">Conecte ou configure o provedor</option>
+              )}
+            </Select>
+          </div>
+        </div>
+        <div className="rounded-[13px] border border-border bg-bg-elevated/65 p-4">
+          <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-text-faint">
+            Em uso pelo Maestro
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-semibold text-text">
+              {selectedTarget?.providerName ?? "Nenhum provedor"}
+            </span>
+            {selectedTarget ? (
+              <Badge tone={statusTone}>{healthLabels[selectedTarget.status]}</Badge>
+            ) : null}
+          </div>
+          {selectedTarget?.kind === "account" ? (
+            <p className="mt-1 text-[10px] font-medium text-primary-soft">
+              Perfil “{selectedTarget.displayName}”
+            </p>
+          ) : null}
+          <p className="mt-2 text-[10px] leading-4 text-text-faint">
+            {selectedTarget?.message ?? "Configure ao menos um provedor para continuar."}
+          </p>
+          {save.isPending ? <p className="mt-2 text-[10px] text-info">Salvando escolha…</p> : null}
+        </div>
+      </div>
+      {save.error ? (
+        <p className="border-t border-danger/20 bg-danger/[0.04] px-5 py-2 text-[10px] text-danger">
+          {save.error instanceof Error ? save.error.message : String(save.error)}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function AgentAccounts({
   bootstrap,
   onBootstrap,
   onLogin,
@@ -176,6 +432,13 @@ function SubscriptionAccounts({
 }) {
   const [providerId, setProviderId] = useState<"codex" | "claude-code">("claude-code");
   const [name, setName] = useState("");
+  const [orderedAccounts, setOrderedAccounts] = useState(bootstrap.providerConnections);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  useEffect(
+    () => setOrderedAccounts(bootstrap.providerConnections),
+    [bootstrap.providerConnections],
+  );
   const reload = async () => onBootstrap(await api().bootstrap());
   const create = useMutation({
     mutationFn: () =>
@@ -193,43 +456,106 @@ function SubscriptionAccounts({
     mutationFn: (input: Parameters<ReturnType<typeof api>["updateProviderConnection"]>[0]) =>
       api().updateProviderConnection(input),
     onSuccess: reload,
+    onError: reload,
   });
   const remove = useMutation({
     mutationFn: (connectionId: string) => api().deleteProviderConnection(connectionId),
     onSuccess: reload,
   });
+  const reorder = useMutation({
+    mutationFn: (connectionIds: string[]) => api().reorderProviderConnections(connectionIds),
+    onSuccess: reload,
+    onError: () => setOrderedAccounts(bootstrap.providerConnections),
+  });
+  const moveAccount = (connectionId: string, targetIndex: number) => {
+    const sourceIndex = orderedAccounts.findIndex(
+      (account) => account.connection.id === connectionId,
+    );
+    if (sourceIndex < 0 || sourceIndex === targetIndex) return;
+    const next = [...orderedAccounts];
+    const [moved] = next.splice(sourceIndex, 1);
+    if (!moved) return;
+    next.splice(Math.max(0, Math.min(targetIndex, next.length)), 0, moved);
+    setOrderedAccounts(next);
+    reorder.mutate(next.map((account) => account.connection.id));
+  };
+  const maestroSelection =
+    bootstrap.settings.defaultModels.maestro ?? bootstrap.settings.defaultModels.planner;
+  const maestroConnectionId =
+    maestroSelection?.connectionId ??
+    orderedAccounts.find(
+      (account) => account.connection.providerId === maestroSelection?.providerId,
+    )?.connection.id;
+  const busy = update.isPending || remove.isPending || reorder.isPending;
 
   return (
     <section className="panel mt-6 overflow-hidden">
       <div className="panel-header">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-[14px] font-semibold">Contas por assinatura</h3>
+            <h3 className="text-[14px] font-semibold">Contas dos agentes</h3>
             <InfoTooltip
-              content="Cada conta funciona em um perfil isolado do CLI. O roteamento e os limites abaixo definem como novas sessões são distribuídas entre elas."
-              label="Ajuda sobre contas por assinatura"
+              content="Os agentes usam a primeira conta compatível e disponível. Quando ela atinge o limite de sessões, o Maestro tenta a próxima conta do mesmo provedor na ordem."
+              label="Ajuda sobre as contas dos agentes"
             />
-            <Badge tone="success">sem limite artificial</Badge>
+            <Badge tone="primary">ordem = prioridade</Badge>
           </div>
           <p className="mt-1 text-[10px] text-text-faint">
-            Cada conta possui diretório e processo próprios; tokens continuam sob controle do CLI.
+            Arraste pelo marcador à esquerda. A conta no topo tem prioridade mais alta.
           </p>
         </div>
-        <div className="hidden items-center gap-2 text-[10px] text-success sm:flex">
-          <CreditCard size={11} /> somente assinatura
+        <div className="hidden items-center gap-2 text-[10px] text-primary-soft sm:flex">
+          <ListOrdered size={12} /> fila de execução
         </div>
       </div>
       <div className="divide-y divide-border/70">
-        {bootstrap.providerConnections.map((account) => (
-          <SubscriptionAccountRow
-            key={account.connection.id}
-            account={account}
-            busy={update.isPending || remove.isPending}
-            onLogin={() => onLogin(account.connection.id)}
-            onUpdate={(values) => update.mutate({ connectionId: account.connection.id, ...values })}
-            onDelete={() => remove.mutate(account.connection.id)}
-          />
-        ))}
+        {orderedAccounts.map((account, index) => {
+          const connectionId = account.connection.id;
+          return (
+            <div
+              key={connectionId}
+              className={`transition-colors ${dragOverId === connectionId && draggingId !== connectionId ? "bg-primary/[0.055]" : ""}`}
+              onDragOver={(event) => {
+                if (draggingId === connectionId) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverId(connectionId);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setDragOverId(null);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId = draggingId ?? event.dataTransfer.getData("text/plain");
+                setDraggingId(null);
+                setDragOverId(null);
+                if (sourceId) moveAccount(sourceId, index);
+              }}
+            >
+              <AgentAccountRow
+                account={account}
+                rank={index + 1}
+                total={orderedAccounts.length}
+                isMaestro={maestroConnectionId === connectionId}
+                busy={busy}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", connectionId);
+                  setDraggingId(connectionId);
+                }}
+                onDragEnd={() => {
+                  setDraggingId(null);
+                  setDragOverId(null);
+                }}
+                onMove={(offset) => moveAccount(connectionId, index + offset)}
+                onLogin={() => onLogin(connectionId)}
+                onUpdate={(values) => update.mutate({ connectionId, ...values })}
+                onDelete={() => remove.mutate(connectionId)}
+              />
+            </div>
+          );
+        })}
       </div>
       <div className="border-t border-warning/20 bg-warning/[0.035] px-4 py-3 text-[10px] leading-4 text-warning">
         Para garantia total, desative “usage credits/extra usage” em cada conta no próprio
@@ -242,8 +568,8 @@ function SubscriptionAccounts({
           value={providerId}
           onChange={(event) => setProviderId(event.target.value as "codex" | "claude-code")}
         >
-          <option value="claude-code">Claude</option>
-          <option value="codex">Codex</option>
+          <option value="claude-code">Anthropic · Claude Code</option>
+          <option value="codex">OpenAI · Codex</option>
         </Select>
         <Input
           aria-label="Nome da nova conta"
@@ -262,35 +588,45 @@ function SubscriptionAccounts({
           <Plus size={12} /> Adicionar conta
         </Button>
       </div>
-      {create.error || update.error || remove.error ? (
+      {create.error || update.error || remove.error || reorder.error ? (
         <p className="border-t border-danger/20 bg-danger/[0.04] px-4 py-2 text-[10px] text-danger">
-          {String(create.error ?? update.error ?? remove.error)}
+          {String(create.error ?? update.error ?? remove.error ?? reorder.error)}
         </p>
       ) : null}
     </section>
   );
 }
 
-function SubscriptionAccountRow({
+function AgentAccountRow({
   account,
+  rank,
+  total,
+  isMaestro,
   busy,
+  onDragStart,
+  onDragEnd,
+  onMove,
   onLogin,
   onUpdate,
   onDelete,
 }: {
   account: ProviderConnectionSummary;
+  rank: number;
+  total: number;
+  isMaestro: boolean;
   busy: boolean;
+  onDragStart: (event: DragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+  onMove: (offset: -1 | 1) => void;
   onLogin: () => void;
-  onUpdate: (values: {
-    name?: string;
-    enabled?: boolean;
-    priority?: number;
-    concurrencyLimit?: number;
-  }) => void;
+  onUpdate: (values: { name?: string; enabled?: boolean; concurrencyLimit?: number }) => void;
   onDelete: () => void;
 }) {
   const { connection, health } = account;
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [accountName, setAccountName] = useState(connection.name);
+  useEffect(() => setAccountName(connection.name), [connection.name]);
+  const details = accountProviderDetails[connection.providerId];
   const tone =
     health.status === "ready"
       ? "success"
@@ -298,115 +634,146 @@ function SubscriptionAccountRow({
         ? "warning"
         : "danger";
   const healthLabel = healthLabels[health.status];
+  const saveName = () => {
+    const value = accountName.trim();
+    if (!value) setAccountName(connection.name);
+    else if (value !== connection.name) onUpdate({ name: value });
+  };
+  const handleReorderKey = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowUp" && rank > 1) {
+      event.preventDefault();
+      onMove(-1);
+    }
+    if (event.key === "ArrowDown" && rank < total) {
+      event.preventDefault();
+      onMove(1);
+    }
+  };
   return (
-    <div className={`px-4 py-4 ${connection.enabled ? "" : "opacity-55"}`}>
-      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-3 lg:grid-cols-[auto_minmax(200px,1fr)_auto]">
-        <div className="grid size-9 place-items-center rounded-[10px] border border-border bg-bg-elevated text-[10px] font-semibold text-primary-soft">
-          {connection.providerId === "codex" ? "CX" : "CL"}
+    <div className={`px-3 py-4 md:px-4 ${connection.enabled ? "" : "opacity-55"}`}>
+      <div className="flex items-start gap-2 md:gap-3">
+        <button
+          type="button"
+          draggable={!busy}
+          disabled={busy}
+          className="mt-1 grid size-8 shrink-0 cursor-grab place-items-center rounded-[9px] text-text-faint transition-colors hover:bg-surface-hover hover:text-text active:cursor-grabbing disabled:cursor-default"
+          title="Arraste para reordenar. Com foco, use as setas para cima e para baixo."
+          aria-label={`Reordenar ${connection.name}, prioridade ${rank} de ${total}`}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          onKeyDown={handleReorderKey}
+        >
+          <GripVertical size={16} />
+        </button>
+        <div className="mt-0.5 w-8 shrink-0 text-center">
+          <span className="block text-[13px] font-bold tabular-nums text-primary-soft">
+            #{rank}
+          </span>
+          <span className="mt-0.5 block text-[7px] font-semibold uppercase tracking-wide text-text-faint">
+            prioridade
+          </span>
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              className="min-w-0 max-w-52 rounded-md border-0 bg-transparent px-1 text-[12px] font-semibold text-text outline-none focus:ring-1 focus:ring-primary/30"
-              defaultValue={connection.name}
-              aria-label="Nome da conta"
-              onBlur={(event) => {
-                const value = event.target.value.trim();
-                if (value && value !== connection.name) onUpdate({ name: value });
-              }}
-            />
-            <InfoTooltip
-              content="Nome local usado apenas para identificar este perfil. Renomear não altera a conta no Claude ou ChatGPT."
-              label="Ajuda sobre o nome da conta"
-            />
-            <Badge tone={tone}>{healthLabel}</Badge>
-            {connection.isDefault ? <Badge tone="neutral">perfil atual</Badge> : null}
-            <Badge tone="success">assinatura</Badge>
-          </div>
-          <p
-            className="mt-1 truncate text-[10px] text-text-faint"
-            title={connection.stateDirectory ?? undefined}
-          >
-            {health.message} ·{" "}
-            {connection.stateDirectory
-              ? compactPath(connection.stateDirectory, 72)
-              : "diretório padrão do CLI"}
-          </p>
+        <div className="grid size-10 shrink-0 place-items-center rounded-[11px] border border-border bg-bg-elevated text-[10px] font-semibold text-primary-soft">
+          {details.initials}
         </div>
-        <div className="col-span-2 ml-12 flex flex-wrap items-end gap-2 lg:col-span-1 lg:ml-0">
-          <div>
-            <div className="flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-faint">
-              <label htmlFor={`account-priority-${connection.id}`}>prioridade</label>
-              <InfoTooltip
-                className="size-4"
-                content="Números menores são preferidos. Tem efeito principal no roteamento por prioridade e serve como desempate no modo de menor carga."
-                label="Ajuda sobre prioridade da conta"
+        <div className="min-w-0 flex-1 lg:grid lg:grid-cols-[minmax(220px,1fr)_auto] lg:items-end lg:gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="neutral">{details.company}</Badge>
+              <span className="text-[11px] font-semibold text-text-muted">{details.product}</span>
+              <Badge tone={tone}>{healthLabel}</Badge>
+              {connection.isDefault ? <Badge tone="neutral">perfil atual</Badge> : null}
+              {isMaestro ? <Badge tone="primary">também coordena o Maestro</Badge> : null}
+            </div>
+            <div className="mt-2 max-w-sm">
+              <label
+                htmlFor={`account-name-${connection.id}`}
+                className="mb-1 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-text-faint"
+              >
+                <Pencil size={9} /> Nome dentro do Maestro · você pode renomear
+              </label>
+              <Input
+                id={`account-name-${connection.id}`}
+                className="h-8 text-[12px] font-semibold"
+                value={accountName}
+                aria-label="Nome da conta no Maestro"
+                disabled={busy}
+                onChange={(event) => setAccountName(event.target.value)}
+                onBlur={saveName}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") {
+                    setAccountName(connection.name);
+                    event.currentTarget.blur();
+                  }
+                }}
               />
             </div>
-            <Input
-              id={`account-priority-${connection.id}`}
-              className="mt-1 h-7 w-16"
-              type="number"
-              min={0}
-              max={10_000}
-              defaultValue={connection.priority}
-              onBlur={(event) =>
-                onUpdate({ priority: Math.max(0, event.target.valueAsNumber || 0) })
-              }
-            />
-          </div>
-          <div>
-            <div className="flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-faint">
-              <label htmlFor={`account-sessions-${connection.id}`}>sessões</label>
-              <InfoTooltip
-                className="size-4"
-                content="Máximo de sessões simultâneas permitidas para esta conta. Ao atingir o limite, o Maestro escolhe outra conta disponível ou aguarda."
-                label="Ajuda sobre sessões simultâneas"
-              />
-            </div>
-            <Input
-              id={`account-sessions-${connection.id}`}
-              className="mt-1 h-7 w-16"
-              type="number"
-              min={1}
-              max={16}
-              defaultValue={connection.concurrencyLimit}
-              onBlur={(event) =>
-                onUpdate({
-                  concurrencyLimit: Math.max(1, Math.min(16, event.target.valueAsNumber || 1)),
-                })
-              }
-            />
-          </div>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={onLogin}>
-            <Link2 size={11} /> {health.status === "ready" ? "Reconectar" : "Conectar"}
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            title={connection.enabled ? "Desativar" : "Ativar"}
-            aria-label={connection.enabled ? "Desativar conta" : "Ativar conta"}
-            disabled={busy}
-            onClick={() => onUpdate({ enabled: !connection.enabled })}
-          >
-            <Power size={13} />
-          </Button>
-          {!connection.isDefault ? (
-            <Button
-              size={confirmDelete ? "sm" : "icon"}
-              variant={confirmDelete ? "danger" : "ghost"}
-              title={confirmDelete ? "Clique novamente para confirmar" : "Remover perfil"}
-              aria-label={confirmDelete ? "Confirmar remoção da conta" : "Remover conta"}
-              disabled={busy || account.activeSessions > 0}
-              onBlur={() => setConfirmDelete(false)}
-              onClick={() => {
-                if (confirmDelete) onDelete();
-                else setConfirmDelete(true);
-              }}
+            <p
+              className="mt-1.5 truncate text-[10px] text-text-faint"
+              title={connection.stateDirectory ?? undefined}
             >
-              <Trash2 size={13} /> {confirmDelete ? "Confirmar" : null}
+              {health.message} ·{" "}
+              {connection.stateDirectory
+                ? compactPath(connection.stateDirectory, 72)
+                : "diretório padrão do CLI"}
+            </p>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-2 lg:mt-0 lg:justify-end">
+            <div>
+              <div className="flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-faint">
+                <label htmlFor={`account-sessions-${connection.id}`}>sessões</label>
+                <InfoTooltip
+                  className="size-4"
+                  content="Máximo de sessões simultâneas permitidas para esta conta. Ao atingir o limite, o Maestro escolhe outra conta disponível ou aguarda."
+                  label="Ajuda sobre sessões simultâneas"
+                />
+              </div>
+              <Input
+                id={`account-sessions-${connection.id}`}
+                className="mt-1 h-7 w-16"
+                type="number"
+                min={1}
+                max={16}
+                defaultValue={connection.concurrencyLimit}
+                disabled={busy}
+                onBlur={(event) =>
+                  onUpdate({
+                    concurrencyLimit: Math.max(1, Math.min(16, event.target.valueAsNumber || 1)),
+                  })
+                }
+              />
+            </div>
+            <Button size="sm" variant="secondary" disabled={busy} onClick={onLogin}>
+              <Link2 size={11} /> {health.status === "ready" ? "Reconectar" : "Conectar"}
             </Button>
-          ) : null}
+            <Button
+              size="icon"
+              variant="ghost"
+              title={connection.enabled ? "Desativar" : "Ativar"}
+              aria-label={connection.enabled ? "Desativar conta" : "Ativar conta"}
+              disabled={busy}
+              onClick={() => onUpdate({ enabled: !connection.enabled })}
+            >
+              <Power size={13} />
+            </Button>
+            {!connection.isDefault ? (
+              <Button
+                size={confirmDelete ? "sm" : "icon"}
+                variant={confirmDelete ? "danger" : "ghost"}
+                title={confirmDelete ? "Clique novamente para confirmar" : "Remover perfil"}
+                aria-label={confirmDelete ? "Confirmar remoção da conta" : "Remover conta"}
+                disabled={busy || account.activeSessions > 0}
+                onBlur={() => setConfirmDelete(false)}
+                onClick={() => {
+                  if (confirmDelete) onDelete();
+                  else setConfirmDelete(true);
+                }}
+              >
+                <Trash2 size={13} /> {confirmDelete ? "Confirmar" : null}
+              </Button>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
@@ -819,27 +1186,16 @@ function GeneralSettings({
             />
           </div>
           <div>
-            <SettingLabel
-              htmlFor="settings-subscription-routing"
-              help="Decide qual conta Claude/Codex disponível recebe uma nova sessão: menor carga equilibra uso, alternar distribui em sequência e prioridade usa primeiro os menores números."
-            >
-              Roteamento entre assinaturas
+            <SettingLabel help="A prioridade agora é definida diretamente pela ordem visual das contas. O Maestro tenta primeiro a conta compatível que estiver mais acima e avança quando ela estiver indisponível ou sem capacidade.">
+              Prioridade das contas dos agentes
             </SettingLabel>
-            <Select
-              id="settings-subscription-routing"
-              className="w-full"
-              value={settings.subscriptionRouting}
-              onChange={(event) =>
-                setSettings({
-                  ...settings,
-                  subscriptionRouting: event.target.value as AppSettings["subscriptionRouting"],
-                })
-              }
-            >
-              <option value="least-active">Menor carga (recomendado)</option>
-              <option value="round-robin">Alternar contas</option>
-              <option value="priority">Preencher por prioridade</option>
-            </Select>
+            <div className="flex min-h-10 items-center gap-3 rounded-[10px] border border-primary/20 bg-primary/[0.045] px-3.5 py-2.5">
+              <ListOrdered className="shrink-0 text-primary-soft" size={15} />
+              <p className="text-[11px] leading-4 text-text-muted">
+                Definida pela ordem da lista na aba <strong className="text-text">Conexões</strong>.
+                Arraste as contas para alterar.
+              </p>
+            </div>
           </div>
           <div>
             <SettingLabel

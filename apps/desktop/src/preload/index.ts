@@ -38,6 +38,8 @@ const api: MaestroDesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.providerConnectionCreate, input),
   updateProviderConnection: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.providerConnectionUpdate, input),
+  reorderProviderConnections: (connectionIds) =>
+    ipcRenderer.invoke(IPC_CHANNELS.providerConnectionReorder, connectionIds),
   deleteProviderConnection: (connectionId) =>
     ipcRenderer.invoke(IPC_CHANNELS.providerConnectionDelete, connectionId),
   loginProviderConnection: (connectionId) =>

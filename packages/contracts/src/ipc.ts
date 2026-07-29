@@ -179,6 +179,7 @@ export interface MaestroDesktopApi {
   updateProviderConnection(
     input: UpdateProviderConnectionInput,
   ): Promise<ProviderConnectionSummary[]>;
+  reorderProviderConnections(connectionIds: string[]): Promise<ProviderConnectionSummary[]>;
   deleteProviderConnection(connectionId: string): Promise<ProviderConnectionSummary[]>;
   loginProviderConnection(connectionId: string): Promise<TerminalSessionDto>;
   updateSettings(settings: Partial<AppSettings>): Promise<AppSettings>;

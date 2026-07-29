@@ -802,11 +802,13 @@ export class MaestroRepository {
     const [row] = await this.db.select().from(settings).where(eq(settings.scope, "app")).limit(1);
     if (!row) return DEFAULT_APP_SETTINGS;
     const parsed = appSettingsSchema.safeParse(row.value);
-    return parsed.success ? parsed.data : DEFAULT_APP_SETTINGS;
+    return parsed.success
+      ? { ...parsed.data, subscriptionRouting: "priority" }
+      : DEFAULT_APP_SETTINGS;
   }
 
   async setSettings(value: AppSettings): Promise<AppSettings> {
-    const parsed = appSettingsSchema.parse(value);
+    const parsed = appSettingsSchema.parse({ ...value, subscriptionRouting: "priority" });
     const timestamp = now();
     await this.db
       .insert(settings)
@@ -853,7 +855,7 @@ export class MaestroRepository {
       : await this.db
           .select()
           .from(providerConnections)
-          .orderBy(asc(providerConnections.providerId), asc(providerConnections.priority));
+          .orderBy(asc(providerConnections.priority), asc(providerConnections.createdAt));
     return rows;
   }
 
@@ -881,6 +883,9 @@ export class MaestroRepository {
     concurrencyLimit?: number;
   }): Promise<ProviderConnection> {
     const timestamp = now();
+    const latest = this.sqlite
+      .prepare("SELECT MAX(priority) AS priority FROM provider_connections")
+      .get() as { priority: number | null };
     const row: ProviderConnection = {
       id: input.id ?? ulid(),
       providerId: input.providerId,
@@ -889,7 +894,7 @@ export class MaestroRepository {
       enabled: true,
       isDefault: input.isDefault ?? false,
       stateDirectory: input.stateDirectory ?? null,
-      priority: input.priority ?? 100,
+      priority: input.priority ?? (latest.priority ?? -1) + 1,
       concurrencyLimit: input.concurrencyLimit ?? 1,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -911,6 +916,30 @@ export class MaestroRepository {
       .set({ ...values, updatedAt: now() })
       .where(eq(providerConnections.id, connectionId));
     return this.getProviderConnection(connectionId);
+  }
+
+  async reorderProviderConnections(connectionIds: string[]): Promise<ProviderConnection[]> {
+    const current = await this.listProviderConnections();
+    const currentIds = new Set(current.map((connection) => connection.id));
+    if (
+      connectionIds.length !== current.length ||
+      new Set(connectionIds).size !== connectionIds.length ||
+      connectionIds.some((connectionId) => !currentIds.has(connectionId))
+    ) {
+      throw new MaestroError(
+        "INVALID_PROVIDER_CONNECTION_ORDER",
+        "A ordem enviada precisa conter todas as contas conectadas exatamente uma vez.",
+        { recoverable: true },
+      );
+    }
+    const timestamp = now();
+    this.sqlite.transaction(() => {
+      const update = this.sqlite.prepare(
+        "UPDATE provider_connections SET priority = ?, updated_at = ? WHERE id = ?",
+      );
+      connectionIds.forEach((connectionId, index) => update.run(index, timestamp, connectionId));
+    })();
+    return this.listProviderConnections();
   }
 
   async deleteProviderConnection(connectionId: string): Promise<void> {

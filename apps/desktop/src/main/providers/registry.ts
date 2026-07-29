@@ -61,8 +61,6 @@ export class ProviderRegistry {
   readonly #summaries = new Map<string, ProviderSummary>();
   readonly #connectionSummaries = new Map<string, ProviderConnectionSummary>();
   readonly #activeCounts = new Map<string, number>();
-  readonly #roundRobin = new Map<string, number>();
-  #routingStrategy: "least-active" | "priority" | "round-robin" = "least-active";
 
   constructor(dependencies: ProviderDependencies) {
     this.#dependencies = dependencies;
@@ -128,7 +126,7 @@ export class ProviderRegistry {
     };
   }
 
-  assignSubscription(selection: ModelSelection): ModelSelection {
+  prepareSubscription(selection: ModelSelection): ModelSelection {
     if (!isCliProviderId(selection.providerId)) {
       throw new MaestroError(
         "PAID_API_BLOCKED",
@@ -138,7 +136,7 @@ export class ProviderRegistry {
     }
     const summary = selection.connectionId
       ? this.#connectionSummaries.get(selection.connectionId)
-      : this.#selectConnection(selection.providerId, true);
+      : this.#selectConnection(selection.providerId);
     if (!summary || summary.health.status !== "ready" || !summary.connection.enabled) {
       throw new MaestroError(
         "SUBSCRIPTION_CONNECTION_UNAVAILABLE",
@@ -146,7 +144,11 @@ export class ProviderRegistry {
         { recoverable: true },
       );
     }
-    return { ...selection, connectionId: summary.connection.id };
+    return {
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      ...(selection.effort ? { effort: selection.effort } : {}),
+    };
   }
 
   markSessionStarted(connectionId?: string): void {
@@ -180,14 +182,12 @@ export class ProviderRegistry {
       }))
       .sort(
         (left, right) =>
-          left.connection.providerId.localeCompare(right.connection.providerId) ||
           left.connection.priority - right.connection.priority ||
           left.connection.createdAt.localeCompare(right.connection.createdAt),
       );
   }
 
   async refresh(signal?: AbortSignal): Promise<ProviderSummary[]> {
-    this.#routingStrategy = (await this.#dependencies.repository.getSettings()).subscriptionRouting;
     await this.#ensureDefaultConnections();
     await this.#syncConnectionAdapters();
     await Promise.all([
@@ -334,6 +334,12 @@ export class ProviderRegistry {
     return this.listConnectionsCached();
   }
 
+  async reorderConnections(connectionIds: string[]): Promise<ProviderConnectionSummary[]> {
+    await this.#dependencies.repository.reorderProviderConnections(connectionIds);
+    await this.refresh();
+    return this.listConnectionsCached();
+  }
+
   async deleteConnection(connectionId: string): Promise<ProviderConnectionSummary[]> {
     if ((this.#activeCounts.get(connectionId) ?? 0) > 0)
       throw new MaestroError(
@@ -387,7 +393,6 @@ export class ProviderRegistry {
           name: "Conta padrão",
           isDefault: true,
           stateDirectory: null,
-          priority: 10,
           concurrencyLimit: 1,
         });
       }
@@ -414,10 +419,7 @@ export class ProviderRegistry {
     }
   }
 
-  #selectConnection(
-    providerId: "codex" | "claude-code",
-    rotate = false,
-  ): ProviderConnectionSummary | null {
+  #selectConnection(providerId: "codex" | "claude-code"): ProviderConnectionSummary | null {
     const candidates = this.listConnectionsCached().filter(
       (summary) =>
         summary.connection.providerId === providerId &&
@@ -426,18 +428,7 @@ export class ProviderRegistry {
         summary.activeSessions < summary.connection.concurrencyLimit,
     );
     if (candidates.length === 0) return null;
-    candidates.sort((left, right) => {
-      const loadLeft = left.activeSessions / left.connection.concurrencyLimit;
-      const loadRight = right.activeSessions / right.connection.concurrencyLimit;
-      return this.#routingStrategy === "priority"
-        ? left.connection.priority - right.connection.priority || loadLeft - loadRight
-        : loadLeft - loadRight || left.connection.priority - right.connection.priority;
-    });
-    if (!rotate && this.#routingStrategy !== "round-robin") return candidates[0]!;
-    if (this.#routingStrategy === "priority") return candidates[0]!;
-    const index = this.#roundRobin.get(providerId) ?? 0;
-    this.#roundRobin.set(providerId, index + 1);
-    return candidates[index % candidates.length]!;
+    return candidates[0]!;
   }
 
   #aggregateCliSummary(providerId: "codex" | "claude-code"): ProviderSummary {

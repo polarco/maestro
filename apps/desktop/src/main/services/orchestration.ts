@@ -549,7 +549,12 @@ export class OrchestrationService {
   async #analyze(run: Run, root: WorkspaceRoot): Promise<AnalysisResult> {
     const settings = await this.#repository.getSettings();
     const summaries = this.#providers.listCached();
-    const suggested = settings.defaultModels.analyst ?? settings.defaultModels.planner ?? null;
+    const suggested =
+      run.spec.roleModels.maestro ??
+      settings.defaultModels.maestro ??
+      settings.defaultModels.analyst ??
+      settings.defaultModels.planner ??
+      null;
     try {
       const route = routeModel({
         role: "analyst",
@@ -626,7 +631,7 @@ export class OrchestrationService {
       rationale: "Revisão do plano existente.",
     };
     const summaries = this.#providers.listCached();
-    const suggested = analysis.recommendedPlanner;
+    const suggested = run.spec.roleModels.maestro ?? analysis.recommendedPlanner;
     let generated: GeneratedPlan;
     try {
       const route = routeModel({
@@ -728,7 +733,7 @@ export class OrchestrationService {
       } catch {
         selection = suggested ?? { providerId: "codex", modelId: "default", effort: "medium" };
       }
-      selection = this.#providers.assignSubscription(selection);
+      selection = this.#providers.prepareSubscription(selection);
       return {
         id,
         title: task.title,
@@ -996,11 +1001,7 @@ export class OrchestrationService {
       const taskLineages = new Map<string, string[]>();
       const scheduler = new DagScheduler({
         globalConcurrency: run.spec.concurrency,
-        providerConcurrency: Object.fromEntries(
-          this.#providers
-            .listConnectionsCached()
-            .map((summary) => [summary.connection.id, summary.connection.concurrencyLimit]),
-        ),
+        providerConcurrency: this.#providerConcurrency(),
         signal: controller.signal,
         onState: async (task, from, to, detail) => {
           await this.#repository.updateTaskRun(runId, task.id, {
@@ -1107,6 +1108,7 @@ export class OrchestrationService {
     const { adapter, connection } = resolved;
     if (!connection)
       throw new MaestroError("PAID_API_BLOCKED", "A tarefa exige uma conta por assinatura.");
+    this.#providers.markSessionStarted(connection.id);
     const writable = task.role === "implementer" || task.role === "tester";
     let session: ProviderSession | null = null;
     const sink: ProviderEventSink = async (event) => {
@@ -1140,7 +1142,6 @@ export class OrchestrationService {
       };
       session = await adapter.createSession(sessionSpec, sink);
       this.#trackSession(run.id, task.model.providerId, session.id, connection.id);
-      this.#providers.markSessionStarted(connection.id);
       await this.#repository.updateTaskRun(run.id, task.id, {
         providerSessionId: session.nativeSessionId,
       });
@@ -1174,9 +1175,20 @@ export class OrchestrationService {
     } finally {
       if (session) {
         this.#untrackSession(run.id, task.model.providerId, session.id, connection.id);
-        this.#providers.markSessionEnded(connection.id);
       }
+      this.#providers.markSessionEnded(connection.id);
     }
+  }
+
+  #providerConcurrency(): Record<string, number> {
+    const limits: Record<string, number> = {};
+    for (const { connection, health } of this.#providers.listConnectionsCached()) {
+      if (!connection.enabled || health.status !== "ready") continue;
+      limits[connection.id] = connection.concurrencyLimit;
+      limits[connection.providerId] =
+        (limits[connection.providerId] ?? 0) + connection.concurrencyLimit;
+    }
+    return limits;
   }
 
   async #runValidationCommand(

@@ -364,6 +364,10 @@ export class ApplicationService {
     return this.providers.updateConnection(input);
   }
 
+  reorderProviderConnections(connectionIds: string[]): Promise<ProviderConnectionSummary[]> {
+    return this.providers.reorderConnections(connectionIds);
+  }
+
   deleteProviderConnection(connectionId: string): Promise<ProviderConnectionSummary[]> {
     return this.providers.deleteConnection(connectionId);
   }

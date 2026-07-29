@@ -29,6 +29,7 @@ export const IPC_CHANNELS = {
   providerConfigure: "maestro:provider:configure",
   providerConnectionCreate: "maestro:provider-connection:create",
   providerConnectionUpdate: "maestro:provider-connection:update",
+  providerConnectionReorder: "maestro:provider-connection:reorder",
   providerConnectionDelete: "maestro:provider-connection:delete",
   providerConnectionLogin: "maestro:provider-connection:login",
   settingsUpdate: "maestro:settings:update",

@@ -59,6 +59,17 @@ describe("MaestroRepository", () => {
       priority: 7,
       concurrencyLimit: 3,
     });
+    await db.reorderProviderConnections([second.id, third.id, first.id]);
+    expect(
+      (await db.listProviderConnections()).map((item) => ({
+        id: item.id,
+        priority: item.priority,
+      })),
+    ).toEqual([
+      { id: second.id, priority: 0 },
+      { id: third.id, priority: 1 },
+      { id: first.id, priority: 2 },
+    ]);
     await db.deleteProviderConnection(first.id);
     expect((await db.listProviderConnections()).map((item) => item.id)).toEqual([
       second.id,

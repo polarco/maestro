@@ -78,6 +78,13 @@ const updateProviderConnectionSchema = z
     concurrencyLimit: z.number().int().min(1).max(16).optional(),
   })
   .strict();
+const reorderProviderConnectionsSchema = z
+  .array(entityIdSchema)
+  .min(1)
+  .max(500)
+  .refine((connectionIds) => new Set(connectionIds).size === connectionIds.length, {
+    message: "A ordem das contas não pode conter itens duplicados.",
+  });
 
 export function registerIpc(application: ApplicationService, window: BrowserWindow): () => void {
   const channels: string[] = [];
@@ -217,6 +224,9 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
         : {}),
     });
   });
+  handle(IPC_CHANNELS.providerConnectionReorder, (_event, connectionIds: string[]) =>
+    application.reorderProviderConnections(reorderProviderConnectionsSchema.parse(connectionIds)),
+  );
   handle(IPC_CHANNELS.providerConnectionDelete, (_event, connectionId: string) =>
     application.deleteProviderConnection(entityIdSchema.parse(connectionId)),
   );

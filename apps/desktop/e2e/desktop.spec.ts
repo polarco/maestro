@@ -273,8 +273,43 @@ else if (command[0] === "exec") {
     await page.getByRole("button", { name: "Histórico" }).click();
     await expect(page.getByText("Fluxo Maestro E2E", { exact: true }).first()).toBeVisible();
     await page.getByRole("button", { name: "Configurações" }).click();
-    await expect(page.getByRole("heading", { name: "Contas por assinatura" })).toBeVisible();
-    await expect(page.getByLabel("Nome da conta").first()).toHaveValue("Conta padrão");
+    await expect(
+      page.getByRole("heading", { name: "Conta/API principal do Maestro" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Contas dos agentes" })).toBeVisible();
+    await expect(page.getByLabel("Nome da conta no Maestro").first()).toHaveValue("Conta padrão");
+    await expect(page.getByText("ordem = prioridade", { exact: true })).toBeVisible();
+    const maestroAccount = page.getByLabel("Conta ou API");
+    const openAiOption = maestroAccount.locator("option").filter({ hasText: "OpenAI-compatible" });
+    const openAiValue = await openAiOption.getAttribute("value");
+    if (!openAiValue) throw new Error("Opção OpenAI-compatible não encontrada.");
+    await maestroAccount.selectOption(openAiValue);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async () => (await window.maestro.bootstrap()).settings.defaultModels.maestro?.providerId,
+        ),
+      )
+      .toBe("openai-compatible");
+    const accountOrder = await page.evaluate(async () =>
+      (await window.maestro.bootstrap()).providerConnections.map((item) => item.connection.id),
+    );
+    const firstAccountHandle = page.getByRole("button", {
+      name: /Reordenar .* prioridade 1 de/,
+    });
+    const secondAccountHandle = page.getByRole("button", {
+      name: /Reordenar .* prioridade 2 de/,
+    });
+    await expect(firstAccountHandle).toBeEnabled();
+    await expect(secondAccountHandle).toBeEnabled();
+    await firstAccountHandle.dragTo(secondAccountHandle);
+    await expect
+      .poll(() =>
+        page.evaluate(async () =>
+          (await window.maestro.bootstrap()).providerConnections.map((item) => item.connection.id),
+        ),
+      )
+      .toEqual([...accountOrder].reverse());
     await page.getByRole("button", { name: "Geral", exact: true }).click();
     await expect(page.getByText("Origem oficial de atualizações")).toBeVisible();
     await expect(page.getByRole("radio", { name: "Tema escuro", exact: true })).toBeChecked();
