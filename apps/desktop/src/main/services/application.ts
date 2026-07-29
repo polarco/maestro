@@ -64,6 +64,7 @@ export class ApplicationService {
   readonly updates: UpdateService;
   readonly #directoryGrants = new Map<string, Grant>();
   readonly #attachmentGrants = new Map<string, Grant>();
+  #settingsUpdateTail: Promise<void> = Promise.resolve();
   #runEventHandler: (event: RunEvent) => void = () => {};
   #terminalEventHandler: (event: TerminalEvent) => void = () => {};
   #updateEventHandler: (state: UpdateState) => void = () => {};
@@ -384,21 +385,30 @@ export class ApplicationService {
     });
   }
 
-  async updateSettings(partial: {
+  updateSettings(partial: {
     [Key in keyof AppSettings]?: AppSettings[Key] | undefined;
   }): Promise<AppSettings> {
-    const current = await this.repository.getSettings();
-    const defined = Object.fromEntries(
-      Object.entries(partial).filter(
-        (entry): entry is [string, AppSettings[keyof AppSettings]] => entry[1] !== undefined,
-      ),
+    const update = this.#settingsUpdateTail.then(async () => {
+      const current = await this.repository.getSettings();
+      const defined = Object.fromEntries(
+        Object.entries(partial).filter(
+          (entry): entry is [string, AppSettings[keyof AppSettings]] => entry[1] !== undefined,
+        ),
+      );
+      const next = appSettingsSchema.parse({ ...DEFAULT_APP_SETTINGS, ...current, ...defined });
+      nativeTheme.themeSource = next.theme;
+      const saved = await this.repository.setSettings(next);
+      this.updates.configure(saved);
+      await this.providers.refresh();
+      return saved;
+    });
+
+    this.#settingsUpdateTail = update.then(
+      () => undefined,
+      () => undefined,
     );
-    const next = appSettingsSchema.parse({ ...DEFAULT_APP_SETTINGS, ...current, ...defined });
-    nativeTheme.themeSource = next.theme;
-    const saved = await this.repository.setSettings(next);
-    this.updates.configure(saved);
-    await this.providers.refresh();
-    return saved;
+
+    return update;
   }
 
   unlockVault(password: string): Promise<VaultStatus> {

@@ -2,7 +2,7 @@ import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 import { ipcMain } from "electron";
 import { z } from "zod";
 import {
-  appSettingsSchema,
+  appSettingsUpdateSchema,
   effortSchema,
   entityIdSchema,
   IPC_CHANNELS,
@@ -234,7 +234,7 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
     application.loginProviderConnection(entityIdSchema.parse(connectionId)),
   );
   handle(IPC_CHANNELS.settingsUpdate, (_event, settings: unknown) =>
-    application.updateSettings(appSettingsSchema.partial().parse(settings)),
+    application.updateSettings(appSettingsUpdateSchema.parse(settings)),
   );
   handle(IPC_CHANNELS.vaultUnlock, (_event, password: string) =>
     application.unlockVault(z.string().min(8).max(1_024).parse(password)),

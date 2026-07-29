@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  CircleAlert,
   CircleUserRound,
   Cpu,
   Download,
@@ -23,7 +24,6 @@ import {
   Plus,
   Power,
   RefreshCcw,
-  Save,
   ServerCog,
   Settings2,
   ShieldCheck,
@@ -1423,15 +1423,9 @@ function GeneralSettings({
   onBootstrap: (value: BootstrapPayload) => void;
 }) {
   const [settings, setSettings] = useState<AppSettings>(bootstrap.settings);
-  const baselineSettings = useRef(bootstrap.settings);
-  useEffect(() => {
-    const previous = baselineSettings.current;
-    setSettings((current) => {
-      if (JSON.stringify(current) === JSON.stringify(previous)) return bootstrap.settings;
-      return { ...current, theme: bootstrap.settings.theme };
-    });
-    baselineSettings.current = bootstrap.settings;
-  }, [bootstrap.settings]);
+  const settingsRef = useRef(bootstrap.settings);
+  const persistedSettingsRef = useRef(bootstrap.settings);
+  const saveRevisionRef = useRef(0);
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
     const preview = () => applyTheme(settings.theme);
@@ -1443,9 +1437,45 @@ function GeneralSettings({
     };
   }, [settings.theme, bootstrap.settings.theme]);
   const save = useMutation({
-    mutationFn: () => api().updateSettings(settings),
-    onSuccess: async () => onBootstrap(await api().bootstrap()),
+    mutationFn: ({ patch }: { patch: Partial<AppSettings>; revision: number }) =>
+      api().updateSettings(patch),
+    scope: { id: "general-settings-autosave" },
+    onSuccess: async (saved, request) => {
+      persistedSettingsRef.current = saved;
+      if (request.revision !== saveRevisionRef.current) return;
+      const refreshed = await api().bootstrap();
+      if (request.revision !== saveRevisionRef.current) return;
+      persistedSettingsRef.current = refreshed.settings;
+      settingsRef.current = refreshed.settings;
+      setSettings(refreshed.settings);
+      onBootstrap(refreshed);
+    },
+    onError: async (_error, request) => {
+      if (request.revision !== saveRevisionRef.current) return;
+      const refreshed = await api()
+        .bootstrap()
+        .catch(() => null);
+      if (request.revision !== saveRevisionRef.current) return;
+      const restored = refreshed?.settings ?? persistedSettingsRef.current;
+      persistedSettingsRef.current = restored;
+      settingsRef.current = restored;
+      setSettings(restored);
+      if (refreshed) onBootstrap(refreshed);
+    },
   });
+  useEffect(() => {
+    persistedSettingsRef.current = bootstrap.settings;
+    if (save.isPending) return;
+    settingsRef.current = bootstrap.settings;
+    setSettings(bootstrap.settings);
+  }, [bootstrap.settings, save.isPending]);
+  const updateSetting = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
+    const next = { ...settingsRef.current, [key]: value };
+    settingsRef.current = next;
+    setSettings(next);
+    const revision = ++saveRevisionRef.current;
+    save.mutate({ patch: { [key]: value }, revision });
+  };
   const checkUpdate = useMutation({
     mutationFn: () => api().checkForUpdates(),
     onSuccess: async () => onBootstrap(await api().bootstrap()),
@@ -1472,10 +1502,10 @@ function GeneralSettings({
               </SettingLabel>
               <ThemePicker
                 value={settings.theme}
-                onValueChange={(theme) => setSettings({ ...settings, theme })}
+                onValueChange={(theme) => updateSetting("theme", theme)}
               />
               <p className="mt-2 text-[9.5px] text-text-faint">
-                A prévia é instantânea. Salve para manter a escolha.
+                A prévia é instantânea e a escolha é salva automaticamente.
               </p>
             </div>
             <div className="rounded-[14px] border border-border/80 bg-bg-elevated/45 p-4">
@@ -1494,7 +1524,7 @@ function GeneralSettings({
                 className="w-full"
                 value={settings.locale}
                 onChange={(event) =>
-                  setSettings({ ...settings, locale: event.target.value as AppSettings["locale"] })
+                  updateSetting("locale", event.target.value as AppSettings["locale"])
                 }
               >
                 <option value="pt-BR">Português (Brasil)</option>
@@ -1525,10 +1555,7 @@ function GeneralSettings({
                 className="w-full"
                 value={settings.defaultMode}
                 onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    defaultMode: event.target.value as AppSettings["defaultMode"],
-                  })
+                  updateSetting("defaultMode", event.target.value as AppSettings["defaultMode"])
                 }
               >
                 <option value="maestro">Maestro</option>
@@ -1557,7 +1584,7 @@ function GeneralSettings({
                   value={settings.globalConcurrency}
                   onChange={(event) => {
                     if (Number.isNaN(event.target.valueAsNumber)) return;
-                    setSettings({ ...settings, globalConcurrency: event.target.valueAsNumber });
+                    updateSetting("globalConcurrency", event.target.valueAsNumber);
                   }}
                 />
               </div>
@@ -1602,10 +1629,7 @@ function GeneralSettings({
                 className="w-full"
                 value={settings.updateChannel}
                 onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    updateChannel: event.target.value as AppSettings["updateChannel"],
-                  })
+                  updateSetting("updateChannel", event.target.value as AppSettings["updateChannel"])
                 }
               >
                 <option value="stable">Estável</option>
@@ -1640,7 +1664,9 @@ function GeneralSettings({
               description="Calcula métricas no dispositivo; nenhum dado é enviado pelo Maestro."
               help="Calcula contagens e métricas de uso somente neste dispositivo. Ativar não envia dados para servidores do Maestro."
               checked={settings.telemetryEnabled}
-              onCheckedChange={(telemetryEnabled) => setSettings({ ...settings, telemetryEnabled })}
+              onCheckedChange={(telemetryEnabled) =>
+                updateSetting("telemetryEnabled", telemetryEnabled)
+              }
             />
             <SettingToggleRow
               icon={RefreshCcw}
@@ -1649,7 +1675,7 @@ function GeneralSettings({
               help="Faz uma consulta ao iniciar e depois a cada seis horas. O Maestro avisa antes de baixar ou instalar qualquer versão."
               checked={settings.autoUpdateEnabled}
               onCheckedChange={(autoUpdateEnabled) =>
-                setSettings({ ...settings, autoUpdateEnabled })
+                updateSetting("autoUpdateEnabled", autoUpdateEnabled)
               }
             />
           </div>
@@ -1675,34 +1701,53 @@ function GeneralSettings({
 
         <div
           className={cn(
-            "settings-savebar z-10 flex flex-wrap items-center gap-3 rounded-[16px] border px-3.5 py-3 shadow-[0_18px_48px_-24px_rgb(0_0_0/0.78)] md:px-4",
-            dirty
-              ? "sticky bottom-4 border-primary/25 bg-surface-raised/95"
-              : "border-border/80 bg-surface/95",
+            "settings-savebar flex flex-wrap items-center gap-3 rounded-[16px] border px-3.5 py-3 shadow-[0_18px_48px_-24px_rgb(0_0_0/0.78)] md:px-4",
+            save.error
+              ? "border-danger/25 bg-danger/[0.045]"
+              : dirty || save.isPending
+                ? "border-info/25 bg-surface-raised/95"
+                : "border-success/18 bg-surface/95",
           )}
           aria-live="polite"
+          role="status"
         >
           <span
             className={cn(
               "grid size-8 shrink-0 place-items-center rounded-[10px]",
-              dirty ? "bg-primary/12 text-primary-soft" : "bg-success/10 text-success",
+              save.error
+                ? "bg-danger/10 text-danger"
+                : dirty || save.isPending
+                  ? "bg-info/10 text-info"
+                  : "bg-success/10 text-success",
             )}
           >
-            {dirty ? <Save size={14} /> : <Check size={14} />}
+            {save.error ? (
+              <CircleAlert size={14} />
+            ) : dirty || save.isPending ? (
+              <RefreshCcw className="animate-spin" size={14} />
+            ) : (
+              <Check size={14} />
+            )}
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-[10.5px] font-semibold text-text">
-              {dirty ? "Alterações ainda não salvas" : "Preferências atualizadas"}
+              {save.error
+                ? "Não foi possível salvar a última alteração"
+                : dirty || save.isPending
+                  ? "Salvando automaticamente…"
+                  : "Preferências salvas automaticamente"}
             </span>
             <span className="mt-0.5 block text-[9px] text-text-faint">
-              {dirty
-                ? "Revise e salve para manter estas escolhas."
-                : "Tudo está sincronizado neste dispositivo."}
+              {save.error
+                ? "A preferência anterior foi restaurada. Tente alterar o campo novamente."
+                : dirty || save.isPending
+                  ? "As mudanças são gravadas em ordem para evitar conflitos."
+                  : "Você pode trocar de aba ou fechar esta tela sem perder alterações."}
             </span>
           </span>
-          <Button disabled={save.isPending || !dirty} onClick={() => save.mutate()}>
-            {save.isPending ? "Salvando…" : dirty ? "Salvar preferências" : "Tudo salvo"}
-          </Button>
+          <Badge tone={save.error ? "danger" : dirty || save.isPending ? "info" : "success"}>
+            {save.error ? "falhou" : dirty || save.isPending ? "salvando" : "salvo"}
+          </Badge>
         </div>
         {save.error ? (
           <p className="rounded-[12px] border border-danger/20 bg-danger/[0.04] px-4 py-3 text-[10px] text-danger">

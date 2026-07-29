@@ -323,6 +323,50 @@ else if (command[0] === "exec") {
     await expect(
       page.getByText(/Calcula contagens e métricas de uso somente neste dispositivo/),
     ).toBeVisible();
+    await page.getByLabel("Canal de atualização").selectOption("beta");
+    await page.getByLabel("Modo padrão de conversa").selectOption("chat");
+    await page.getByLabel("Concorrência global (1–16)").fill("7");
+    await page.getByRole("switch", { name: "Telemetria local" }).click();
+    await page.getByRole("tab", { name: "Conexões", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Conta/API principal do Maestro" }),
+    ).toBeVisible();
+    await expect
+      .poll(async () => {
+        const settings = await page.evaluate(
+          async () => (await window.maestro.bootstrap()).settings,
+        );
+        return {
+          theme: settings.theme,
+          updateChannel: settings.updateChannel,
+          defaultMode: settings.defaultMode,
+          globalConcurrency: settings.globalConcurrency,
+          telemetryEnabled: settings.telemetryEnabled,
+        };
+      })
+      .toEqual({
+        theme: "light",
+        updateChannel: "beta",
+        defaultMode: "chat",
+        globalConcurrency: 7,
+        telemetryEnabled: true,
+      });
+    await page.getByRole("tab", { name: "Geral", exact: true }).click();
+    await expect(page.getByText("Preferências salvas automaticamente")).toBeVisible();
+    await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
+    await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
+    await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
+    await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();
+    await application.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.webContents.reload(),
+    );
+    await expect(page.getByRole("button", { name: "Configurações" })).toBeVisible();
+    await page.getByRole("button", { name: "Configurações" }).click();
+    await page.getByRole("tab", { name: "Geral", exact: true }).click();
+    await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
+    await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
+    await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
+    await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();
 
     await page.locator("aside").getByTitle("Fluxo Maestro E2E").hover();
     await page.getByRole("button", { name: "Mais ações para Fluxo Maestro E2E" }).click();

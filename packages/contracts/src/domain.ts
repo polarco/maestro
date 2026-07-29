@@ -272,18 +272,32 @@ export interface RunDetail {
   tasks: TaskRun[];
 }
 
+const appSettingsFields = {
+  locale: z.enum(["pt-BR", "en"]),
+  theme: z.enum(["dark", "light", "system"]),
+  globalConcurrency: z.number().int().min(1).max(16),
+  subscriptionRouting: z.enum(["least-active", "priority", "round-robin"]),
+  autoUpdateEnabled: z.boolean(),
+  updateChannel: z.enum(["stable", "beta"]),
+  telemetryEnabled: z.boolean(),
+  defaultMode: runModeSchema,
+  defaultModels: z.record(z.string(), modelSelectionSchema),
+};
+
 export const appSettingsSchema = z.object({
-  locale: z.enum(["pt-BR", "en"]).default("pt-BR"),
-  theme: z.enum(["dark", "light", "system"]).default("dark"),
-  globalConcurrency: z.number().int().min(1).max(16).default(4),
-  subscriptionRouting: z.enum(["least-active", "priority", "round-robin"]).default("priority"),
-  autoUpdateEnabled: z.boolean().default(true),
-  updateChannel: z.enum(["stable", "beta"]).default("stable"),
-  telemetryEnabled: z.boolean().default(false),
-  defaultMode: runModeSchema.default("maestro"),
-  defaultModels: z.record(z.string(), modelSelectionSchema).default({}),
+  locale: appSettingsFields.locale.default("pt-BR"),
+  theme: appSettingsFields.theme.default("dark"),
+  globalConcurrency: appSettingsFields.globalConcurrency.default(4),
+  subscriptionRouting: appSettingsFields.subscriptionRouting.default("priority"),
+  autoUpdateEnabled: appSettingsFields.autoUpdateEnabled.default(true),
+  updateChannel: appSettingsFields.updateChannel.default("stable"),
+  telemetryEnabled: appSettingsFields.telemetryEnabled.default(false),
+  defaultMode: appSettingsFields.defaultMode.default("maestro"),
+  defaultModels: appSettingsFields.defaultModels.default({}),
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
+
+export const appSettingsUpdateSchema = z.object(appSettingsFields).partial().strict();
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   locale: "pt-BR",
