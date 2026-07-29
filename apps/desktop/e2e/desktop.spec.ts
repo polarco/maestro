@@ -310,7 +310,7 @@ else if (command[0] === "exec") {
         ),
       )
       .toEqual([...accountOrder].reverse());
-    await page.getByRole("button", { name: "Geral", exact: true }).click();
+    await page.getByRole("tab", { name: "Geral", exact: true }).click();
     await expect(page.getByText("Origem oficial de atualizações")).toBeVisible();
     await expect(page.getByRole("radio", { name: "Tema escuro", exact: true })).toBeChecked();
     await page.getByText("Claro", { exact: true }).click();
