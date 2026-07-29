@@ -93,6 +93,61 @@ describe("MaestroRepository", () => {
     db.close();
   });
 
+  it("reuses one empty draft and only lists conversations after their first message", async () => {
+    const db = await repository();
+    const project = await db.createProject({
+      name: "Drafts",
+      path: "/workspace/drafts",
+      canonicalPath: "/workspace/drafts",
+      displayName: "drafts",
+    });
+    const input = {
+      projectId: project.id,
+      title: "Nova conversa",
+      mode: "chat" as const,
+      sessionKind: "structured" as const,
+      workspaceRootId: project.roots[0]!.id,
+    };
+
+    const firstDraft = await db.createConversationDraft(input);
+    const reusedDraft = await db.createConversationDraft({
+      ...input,
+      mode: "agent",
+      providerId: "codex",
+      modelId: "fixture",
+    });
+    expect(reusedDraft).toMatchObject({
+      id: firstDraft.id,
+      mode: "agent",
+      providerId: "codex",
+      modelId: "fixture",
+    });
+    expect(await db.listConversations(project.id)).toEqual([]);
+
+    await db.addMessage({
+      conversationId: firstDraft.id,
+      role: "user",
+      content: "Agora deve aparecer",
+    });
+    expect((await db.listConversations(project.id)).map((conversation) => conversation.id)).toEqual(
+      [firstDraft.id],
+    );
+
+    const secondDraft = await db.createConversationDraft(input);
+    expect(secondDraft.id).not.toBe(firstDraft.id);
+    expect((await db.createConversationDraft(input)).id).toBe(secondDraft.id);
+    await db.deleteConversation(secondDraft.id);
+    await expect(db.getConversation(secondDraft.id)).rejects.toThrow("não encontrada");
+
+    const abandonedDraft = await db.createConversationDraft(input);
+    expect(db.pruneConversationDrafts()).toBe(1);
+    await expect(db.getConversation(abandonedDraft.id)).rejects.toThrow("não encontrada");
+    expect((await db.listConversations(project.id)).map((conversation) => conversation.id)).toEqual(
+      [firstDraft.id],
+    );
+    db.close();
+  });
+
   it("updates and removes projects, roots and conversations as one data graph", async () => {
     const db = await repository();
     const project = await db.createProject({

@@ -102,6 +102,7 @@ export class ApplicationService {
   }
 
   async initialize(): Promise<void> {
+    this.repository.pruneConversationDrafts();
     const settings = await this.repository.getSettings();
     nativeTheme.themeSource = settings.theme;
     this.updates.configure(settings);
@@ -268,7 +269,7 @@ export class ApplicationService {
   }
 
   createConversation(input: CreateConversationInput): Promise<Conversation> {
-    return this.repository.createConversation({
+    return this.repository.createConversationDraft({
       ...input,
       title: input.title?.trim() || "Nova conversa",
       providerId: input.providerId ?? null,

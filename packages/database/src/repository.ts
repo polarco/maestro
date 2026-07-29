@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdirSync } from "node:fs";
 import BetterSqlite3 from "better-sqlite3";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { ulid } from "ulid";
 import {
@@ -65,6 +65,17 @@ export interface SecretRecord {
   iv: string | null;
   tag: string | null;
   updatedAt: string;
+}
+
+interface ConversationInput {
+  projectId: string;
+  title: string;
+  mode: RunMode;
+  sessionKind: SessionKind;
+  providerId?: string | null;
+  providerConnectionId?: string | null;
+  modelId?: string | null;
+  workspaceRootId: string;
 }
 
 export class MaestroRepository {
@@ -259,16 +270,7 @@ export class MaestroRepository {
     return row?.value ?? null;
   }
 
-  async createConversation(input: {
-    projectId: string;
-    title: string;
-    mode: RunMode;
-    sessionKind: SessionKind;
-    providerId?: string | null;
-    providerConnectionId?: string | null;
-    modelId?: string | null;
-    workspaceRootId: string;
-  }): Promise<Conversation> {
+  async createConversation(input: ConversationInput): Promise<Conversation> {
     const root = await this.getWorkspaceRoot(input.workspaceRootId);
     if (root.projectId !== input.projectId)
       throw new MaestroError("WORKSPACE_PROJECT_MISMATCH", "A raiz não pertence ao projeto.");
@@ -289,6 +291,100 @@ export class MaestroRepository {
     };
     await this.db.insert(conversations).values(row);
     return row;
+  }
+
+  async createConversationDraft(input: ConversationInput): Promise<Conversation> {
+    const root = await this.getWorkspaceRoot(input.workspaceRootId);
+    if (root.projectId !== input.projectId)
+      throw new MaestroError("WORKSPACE_PROJECT_MISMATCH", "A raiz não pertence ao projeto.");
+
+    const timestamp = now();
+    const conversationId = this.sqlite.transaction(() => {
+      const drafts = this.sqlite
+        .prepare(
+          `SELECT conversation.id
+           FROM conversations AS conversation
+           WHERE conversation.project_id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM messages AS message
+               WHERE message.conversation_id = conversation.id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM runs AS run
+               WHERE run.conversation_id = conversation.id
+             )
+           ORDER BY conversation.updated_at DESC, conversation.created_at DESC`,
+        )
+        .all(input.projectId) as Array<{ id: string }>;
+      const reusable = drafts[0];
+
+      if (reusable) {
+        const removeDraft = this.sqlite.prepare("DELETE FROM conversations WHERE id = ?");
+        for (const stale of drafts.slice(1)) removeDraft.run(stale.id);
+        this.sqlite
+          .prepare(
+            `UPDATE conversations
+             SET title = ?, mode = ?, session_kind = ?, provider_id = ?,
+                 provider_connection_id = ?, model_id = ?, workspace_root_id = ?,
+                 provider_session_id = NULL, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            input.title,
+            input.mode,
+            input.sessionKind,
+            input.providerId ?? null,
+            input.providerConnectionId ?? null,
+            input.modelId ?? null,
+            input.workspaceRootId,
+            timestamp,
+            reusable.id,
+          );
+        return reusable.id;
+      }
+
+      const id = ulid();
+      this.sqlite
+        .prepare(
+          `INSERT INTO conversations (
+             id, project_id, title, mode, session_kind, provider_id,
+             provider_connection_id, model_id, workspace_root_id,
+             provider_session_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        )
+        .run(
+          id,
+          input.projectId,
+          input.title,
+          input.mode,
+          input.sessionKind,
+          input.providerId ?? null,
+          input.providerConnectionId ?? null,
+          input.modelId ?? null,
+          input.workspaceRootId,
+          timestamp,
+          timestamp,
+        );
+      return id;
+    })();
+
+    return this.getConversation(conversationId);
+  }
+
+  pruneConversationDrafts(): number {
+    return this.sqlite
+      .prepare(
+        `DELETE FROM conversations
+         WHERE NOT EXISTS (
+           SELECT 1 FROM messages AS message
+           WHERE message.conversation_id = conversations.id
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM runs AS run
+             WHERE run.conversation_id = conversations.id
+           )`,
+      )
+      .run().changes;
   }
 
   async updateConversation(
@@ -345,10 +441,14 @@ export class MaestroRepository {
   }
 
   async listConversations(projectId: string, limit = 100): Promise<Conversation[]> {
+    const messagesForConversation = this.db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.conversationId, conversations.id));
     return this.db
       .select()
       .from(conversations)
-      .where(eq(conversations.projectId, projectId))
+      .where(and(eq(conversations.projectId, projectId), exists(messagesForConversation)))
       .orderBy(desc(conversations.updatedAt))
       .limit(Math.max(1, Math.min(limit, 500)));
   }

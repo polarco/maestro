@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AppSettings, BootstrapPayload, ProviderSummary, RunMode } from "@maestro/contracts";
 import { api } from "@renderer/lib/api";
@@ -50,6 +50,7 @@ export default function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [themeSaving, setThemeSaving] = useState(false);
+  const creatingConversation = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem("maestro.sidebar-collapsed") === "true",
   );
@@ -97,6 +98,8 @@ export default function App() {
     [queryClient, themeSaving],
   );
   const newConversation = useCallback(async () => {
+    if (creatingConversation.current) return;
+    creatingConversation.current = true;
     setActionError(null);
     try {
       const bootstrap = queryClient.getQueryData<BootstrapPayload>(["bootstrap"]);
@@ -140,6 +143,8 @@ export default function App() {
       await refresh();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      creatingConversation.current = false;
     }
   }, [queryClient, refresh, setView]);
 

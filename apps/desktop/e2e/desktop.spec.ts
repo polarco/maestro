@@ -188,6 +188,33 @@ else if (command[0] === "exec") {
     await expect(page.getByRole("menuitem", { name: "Gerenciar pastas…" })).toBeVisible();
     await page.keyboard.press("Escape");
 
+    const draftLifecycle = await page.evaluate(async () => {
+      const bootstrap = await window.maestro.bootstrap();
+      const project = bootstrap.projects.find((item) => item.id === bootstrap.activeProjectId)!;
+      const input = {
+        projectId: project.id,
+        mode: "chat" as const,
+        sessionKind: "structured" as const,
+        workspaceRootId: project.roots[0]!.id,
+      };
+      const first = await window.maestro.createConversation(input);
+      const second = await window.maestro.createConversation(input);
+      const recentCount = (await window.maestro.bootstrap()).recentConversations.length;
+      const historyCount = (await window.maestro.listConversations(project.id, 500)).length;
+      await window.maestro.deleteConversation(first.id);
+      const deleted = await window.maestro
+        .getConversation(first.id)
+        .then(() => false)
+        .catch(() => true);
+      return { sameDraft: first.id === second.id, recentCount, historyCount, deleted };
+    });
+    expect(draftLifecycle).toEqual({
+      sameDraft: true,
+      recentCount: 0,
+      historyCount: 0,
+      deleted: true,
+    });
+
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
     const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
     await page.getByRole("button", { name: /Investigue e corrija os testes que falham/ }).click();

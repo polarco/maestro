@@ -508,7 +508,7 @@ export function Sidebar({
                 ))
               ) : (
                 <div className="rounded-[10px] border border-dashed border-border px-3 py-5 text-center text-[11px] leading-4 text-text-faint">
-                  Suas conversas recentes aparecerão aqui.
+                  Suas conversas recentes aparecerão aqui depois da primeira mensagem.
                 </div>
               )}
             </div>
