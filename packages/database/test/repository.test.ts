@@ -5,7 +5,7 @@ import BetterSqlite3 from "better-sqlite3";
 import type { PlanSpec, RunSpec } from "@maestro/contracts";
 import { describe, expect, it } from "vitest";
 import { MaestroRepository } from "../src/repository.js";
-import { INITIAL_MIGRATION } from "../src/migration.js";
+import { INITIAL_MIGRATION, MULTI_ACCOUNT_MIGRATION } from "../src/migration.js";
 
 async function repository(): Promise<MaestroRepository> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-"));
@@ -30,7 +30,36 @@ describe("MaestroRepository", () => {
     expect(columns.some((column) => column.name === "provider_connection_id")).toBe(true);
     expect(
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    db.close();
+  });
+
+  it("migrates a v2 database to multimodal context tables and FTS", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-v2-"));
+    const filename = path.join(directory, "maestro.db");
+    const legacy = new BetterSqlite3(filename);
+    legacy.exec(INITIAL_MIGRATION);
+    legacy.exec(MULTI_ACCOUNT_MIGRATION);
+    const appliedAt = new Date().toISOString();
+    legacy
+      .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+      .run(1, appliedAt);
+    legacy
+      .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+      .run(2, appliedAt);
+    legacy.close();
+
+    const db = new MaestroRepository(filename);
+    expect(
+      db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    expect(
+      db.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name IN ('context_assets', 'context_chunks_fts') ORDER BY name",
+        )
+        .all(),
+    ).toEqual([{ name: "context_assets" }, { name: "context_chunks_fts" }]);
     db.close();
   });
 
@@ -101,6 +130,103 @@ describe("MaestroRepository", () => {
     db = new MaestroRepository(filename);
     expect(await db.getActiveProjectId()).toBe(project.id);
     expect((await db.listMessages(conversation.id))[0]?.content).toBe("Olá");
+    db.close();
+  });
+
+  it("orders context assets, indexes chunks, preserves legacy attachments and cascades", async () => {
+    const db = await repository();
+    const project = await db.createProject({
+      name: "Contexto",
+      path: "/workspace/context",
+      canonicalPath: "/workspace/context",
+      displayName: "context",
+    });
+    const conversation = await db.createConversation({
+      projectId: project.id,
+      title: "Multimodal",
+      mode: "chat",
+      sessionKind: "structured",
+      workspaceRootId: project.roots[0]!.id,
+    });
+    const base = {
+      projectId: project.id,
+      conversationId: conversation.id,
+      workspaceRootId: null,
+      source: "upload" as const,
+      kind: "text" as const,
+      status: "ready" as const,
+      changeState: "not_applicable" as const,
+      mimeType: "text/plain",
+      size: 12,
+      relativePath: null,
+      sourcePath: null,
+      thumbnailPath: null,
+      currentHash: "hash",
+      sourceModifiedAt: null,
+      durationMs: null,
+      pageCount: null,
+      transcription: null,
+      framePaths: [],
+      metadata: {},
+      warning: null,
+      error: null,
+    };
+    const first = await db.createContextAsset({
+      ...base,
+      name: "primeiro.txt",
+      managedPath: "/private/first.txt",
+      contentHash: "hash-1",
+      extractedText: "termo raro em um relatório",
+    });
+    const second = await db.createContextAsset({
+      ...base,
+      name: "segundo.txt",
+      managedPath: "/private/second.txt",
+      contentHash: "hash-2",
+      extractedText: "outro conteúdo",
+    });
+    await db.replaceContextChunks(first.id, [
+      { content: "introdução genérica", tokenCount: 4 },
+      { content: "termo raro em um relatório", tokenCount: 7 },
+    ]);
+    await db.replaceContextChunks(second.id, [{ content: "outro conteúdo", tokenCount: 3 }]);
+    const message = await db.addMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "analise",
+      attachments: [
+        {
+          id: "legacy-1",
+          name: "legado.txt",
+          mimeType: "text/plain",
+          size: 1,
+          localPath: "/legacy/legado.txt",
+        },
+      ],
+      contextAssetIds: [second.id, first.id],
+    });
+
+    expect(message.contextAssets.map((asset) => asset.id)).toEqual([second.id, first.id]);
+    expect(message.contextAssets[0]).toMatchObject({
+      previewUrl: `maestro-attachment://asset/${conversation.id}/${second.id}`,
+      requiresVision: false,
+    });
+    expect((await db.listMessages(conversation.id))[0]?.attachments[0]?.name).toBe("legado.txt");
+    expect((await db.searchContextChunks([first.id, second.id], "termo raro", 2))[0]).toMatchObject(
+      {
+        assetId: first.id,
+        ordinal: 1,
+      },
+    );
+    expect(await db.isContextAssetLinked(first.id)).toBe(true);
+
+    await db.deleteConversation(conversation.id);
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS count FROM context_assets").get()).toEqual({
+      count: 0,
+    });
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS count FROM context_chunks_fts").get()).toEqual({
+      count: 0,
+    });
     db.close();
   });
 
@@ -197,6 +323,7 @@ describe("MaestroRepository", () => {
       conversationId: conversation.id,
       workspaceRootIds: [project.roots[0]!.id],
       prompt: "teste",
+      contextAssetIds: [],
       requestedModel: null,
       roleModels: {},
       permissions: {
@@ -259,6 +386,7 @@ describe("MaestroRepository", () => {
       conversationId: conversation.id,
       workspaceRootIds: [project.roots[0]!.id],
       prompt: "Faça algo",
+      contextAssetIds: [],
       requestedModel: null,
       roleModels: {},
       permissions: {
@@ -312,6 +440,7 @@ describe("MaestroRepository", () => {
       conversationId: conversation.id,
       workspaceRootIds: [root.id],
       prompt: "implemente",
+      contextAssetIds: [],
       requestedModel: null,
       roleModels: {},
       permissions: {

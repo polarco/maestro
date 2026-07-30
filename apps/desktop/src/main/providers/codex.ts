@@ -10,6 +10,8 @@ import type {
   ProviderHealth,
   ProviderConnection,
   ProviderModel,
+  ProviderInput,
+  ProviderInputPart,
   ProviderSession,
   ProviderSessionSpec,
 } from "@maestro/contracts";
@@ -37,16 +39,81 @@ interface CodexSessionRecord {
   } | null;
 }
 
-function capability(efforts: Effort[]) {
+function capability(efforts: Effort[], vision = false) {
   return {
     chat: true,
     coding: true,
     tools: true,
-    vision: true,
+    vision,
     reasoningEffort: efforts,
     structuredOutput: true,
     contextWindow: null,
   };
+}
+
+function inputParts(input: ProviderInput): ProviderInputPart[] {
+  return typeof input === "string" ? [{ type: "text", text: input }] : input;
+}
+
+export function codexServerInput(input: ProviderInput): JsonRecord[] {
+  return inputParts(input).map((part) =>
+    part.type === "text"
+      ? { type: "text", text: part.text, text_elements: [] }
+      : { type: "localImage", path: part.path },
+  );
+}
+
+export function codexCliImageArgs(input: ProviderInput): string[] {
+  return inputParts(input).flatMap((part) =>
+    part.type === "localImage" ? ["--image", part.path] : [],
+  );
+}
+
+export function codexModelSupportsVision(entry: JsonRecord): boolean {
+  const rawModalities = Array.isArray(entry.inputModalities)
+    ? entry.inputModalities
+    : Array.isArray(entry.input_modalities)
+      ? entry.input_modalities
+      : null;
+  return rawModalities?.some((item) => item === "image") ?? false;
+}
+
+function restrictedThreadConfig(spec: ProviderSessionSpec): JsonRecord | null {
+  if (spec.tools.length > 0) return null;
+  return {
+    web_search: "disabled",
+    mcp_servers: {},
+    features: {
+      apps: false,
+      browser_use: false,
+      computer_use: false,
+      image_generation: false,
+      multi_agent: false,
+      shell_tool: false,
+      unified_exec: false,
+    },
+  };
+}
+
+function restrictedExecArgs(spec: ProviderSessionSpec): string[] {
+  if (spec.tools.length > 0) return [];
+  return [
+    "--ignore-user-config",
+    "--disable",
+    "apps",
+    "--disable",
+    "browser_use",
+    "--disable",
+    "computer_use",
+    "--disable",
+    "image_generation",
+    "--disable",
+    "multi_agent",
+    "--disable",
+    "shell_tool",
+    "--disable",
+    "unified_exec",
+  ];
 }
 
 function nestedString(value: unknown, keys: string[]): string | null {
@@ -205,6 +272,7 @@ export class CodexAdapter implements ProviderAdapter {
             (item): item is Effort =>
               typeof item === "string" && ["low", "medium", "high", "xhigh", "max"].includes(item),
           );
+        const vision = codexModelSupportsVision(entry);
         return [
           {
             id,
@@ -216,7 +284,10 @@ export class CodexAdapter implements ProviderAdapter {
                   : id,
             ...(typeof entry.description === "string" ? { description: entry.description } : {}),
             isDefault: entry.isDefault === true || entry.priority === 1,
-            capabilities: capability(efforts.length > 0 ? efforts : ["low", "medium", "high"]),
+            capabilities: capability(
+              efforts.length > 0 ? efforts : ["low", "medium", "high"],
+              vision,
+            ),
           },
         ];
       });
@@ -267,11 +338,14 @@ export class CodexAdapter implements ProviderAdapter {
 
     try {
       const client = await this.#ensureClient();
+      const config = restrictedThreadConfig(spec);
       const result = await client.request<JsonRecord>("thread/start", {
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
         sandbox: spec.permissions.writeWorkspace ? "workspace-write" : "read-only",
+        ...(config ? { config } : {}),
+        ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
         ephemeral: false,
       });
       const threadId = nestedString(result, ["thread", "id"]);
@@ -314,12 +388,15 @@ export class CodexAdapter implements ProviderAdapter {
     this.#sessions.set(session.id, record);
     try {
       const client = await this.#ensureClient();
+      const config = restrictedThreadConfig(spec);
       await client.request("thread/resume", {
         threadId: spec.resumeSessionId,
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
         sandbox: spec.permissions.writeWorkspace ? "workspace-write" : "read-only",
+        ...(config ? { config } : {}),
+        ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
       });
       record.session.state = "idle";
     } catch {
@@ -329,7 +406,7 @@ export class CodexAdapter implements ProviderAdapter {
     return { ...record.session };
   }
 
-  async send(sessionId: string, prompt: string): Promise<ProviderSession> {
+  async send(sessionId: string, input: ProviderInput): Promise<ProviderSession> {
     const record = this.#requireSession(sessionId);
     if (record.completion)
       throw new MaestroError("SESSION_BUSY", "A sessão Codex já possui um turno ativo.", {
@@ -337,7 +414,7 @@ export class CodexAdapter implements ProviderAdapter {
       });
     record.session.state = "active";
     if (record.transport === "exec") {
-      await this.#sendExec(record, prompt);
+      await this.#sendExec(record, input);
       return { ...record.session };
     }
     const client = await this.#ensureClient();
@@ -347,7 +424,7 @@ export class CodexAdapter implements ProviderAdapter {
     try {
       const result = await client.request<JsonRecord>("turn/start", {
         threadId: record.threadId,
-        input: [{ type: "text", text: prompt, text_elements: [] }],
+        input: codexServerInput(input),
         ...(record.spec.cwd ? { cwd: record.spec.cwd } : {}),
         ...(record.spec.model !== "default" ? { model: record.spec.model } : {}),
         ...(record.spec.effort !== "none" ? { effort: record.spec.effort } : {}),
@@ -364,7 +441,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
   }
 
-  async steer(sessionId: string, prompt: string): Promise<void> {
+  async steer(sessionId: string, input: ProviderInput): Promise<void> {
     const record = this.#requireSession(sessionId);
     if (record.transport !== "app-server" || !record.threadId || !record.currentTurnId) {
       throw new MaestroError(
@@ -377,7 +454,7 @@ export class CodexAdapter implements ProviderAdapter {
     await client.request("turn/steer", {
       threadId: record.threadId,
       expectedTurnId: record.currentTurnId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: codexServerInput(input),
     });
   }
 
@@ -505,26 +582,40 @@ export class CodexAdapter implements ProviderAdapter {
     return { decision: "decline" };
   }
 
-  async #sendExec(record: CodexSessionRecord, prompt: string): Promise<void> {
+  async #sendExec(record: CodexSessionRecord, input: ProviderInput): Promise<void> {
     const executable = await this.#executable();
+    const parts = inputParts(input);
+    const prompt = parts
+      .filter((part): part is Extract<ProviderInputPart, { type: "text" }> => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n");
+    const effectivePrompt = record.spec.systemPrompt
+      ? `<maestro_system_instructions>\n${record.spec.systemPrompt}\n</maestro_system_instructions>\n\n${prompt}`
+      : prompt;
+    const imageArgs = codexCliImageArgs(parts);
+    const restrictedArgs = restrictedExecArgs(record.spec);
     const commandArgs = record.threadId
       ? [
           "exec",
           "resume",
           "--json",
+          ...restrictedArgs,
           ...(record.spec.model !== "default" ? ["--model", record.spec.model] : []),
+          ...imageArgs,
           record.threadId,
-          prompt,
+          effectivePrompt,
         ]
       : [
           "exec",
           "--json",
+          ...restrictedArgs,
           "--sandbox",
           record.spec.permissions.writeWorkspace ? "workspace-write" : "read-only",
           ...(record.spec.cwd ? ["--cd", record.spec.cwd] : []),
           ...(record.spec.model !== "default" ? ["--model", record.spec.model] : []),
+          ...imageArgs,
           "--skip-git-repo-check",
-          prompt,
+          effectivePrompt,
         ];
     const args = [...OFFICIAL_SUBSCRIPTION_CONFIG, ...commandArgs];
     const managed = this.#dependencies.supervisor.spawn({

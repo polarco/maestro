@@ -124,7 +124,11 @@ else if (command[0] === "login" && command[1] === "status") process.stdout.write
 else if (command[0] === "debug") process.stdout.write(JSON.stringify({ models: [{ slug: "fixture", display_name: "Fixture Codex", isDefault: true, supported_reasoning_levels: [{ effort: "medium" }] }] }));
 else if (command[0] === "exec") {
   const prompt = command.at(-1) || "";
-  const answer = prompt.includes("Diga olá") ? "Olá do chat E2E." : "Direct agent fixture complete.";
+  const answer = prompt.includes("conteúdo anexado E2E")
+    ? "Contexto anexado recebido."
+    : prompt.includes("Diga olá")
+      ? "Olá do chat E2E."
+      : "Direct agent fixture complete.";
   process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "e2e-thread" }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "answer", type: "agent_message", text: answer } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 4 } }) + "\\n");
@@ -218,7 +222,7 @@ else if (command[0] === "exec") {
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
     const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
     await page.getByRole("button", { name: /Investigue e corrija os testes que falham/ }).click();
-    await expect(maestroComposer).toHaveValue("Investigue e corrija os testes que falham");
+    await expect(maestroComposer).toHaveText("Investigue e corrija os testes que falham");
     await expect(maestroComposer).toBeFocused();
     await maestroComposer.fill("Execute o fluxo Maestro E2E");
     await page.getByRole("button", { name: "Enviar" }).click();
@@ -265,6 +269,25 @@ else if (command[0] === "exec") {
     await page.getByPlaceholder("Escreva uma mensagem…").fill("Diga olá");
     await page.getByRole("button", { name: "Enviar" }).click();
     await expect(page.getByText("Olá do chat E2E.", { exact: true })).toBeVisible();
+
+    await application.evaluate(({ clipboard }) => clipboard.writeText("conteúdo anexado E2E"));
+    await page.getByRole("button", { name: "Adicionar contexto" }).click();
+    await page.getByRole("button", { name: "Colar conteúdo" }).click();
+    await expect(page.locator(".context-asset-chip").getByText(/texto-colado-/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enviar" })).toBeEnabled();
+    await page.getByRole("button", { name: "Enviar" }).click();
+    await expect(page.getByText("Contexto anexado recebido.", { exact: true })).toBeVisible();
+    const persistedClipboardAsset = await page.evaluate(async () => {
+      const bootstrap = await window.maestro.bootstrap();
+      const conversation = bootstrap.recentConversations[0];
+      if (!conversation) return null;
+      const detail = await window.maestro.getConversation(conversation.id);
+      const asset = detail.messages.flatMap((message) => message.contextAssets)[0];
+      return asset
+        ? { conversationId: conversation.id, source: asset.source, kind: asset.kind }
+        : null;
+    });
+    expect(persistedClipboardAsset).toMatchObject({ source: "clipboard", kind: "text" });
 
     await page.getByRole("button", { name: "Terminal" }).click();
     await page.getByRole("button", { name: "Iniciar sessão" }).click();

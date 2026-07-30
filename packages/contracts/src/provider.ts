@@ -123,9 +123,14 @@ export interface ProviderSession {
   state: "starting" | "active" | "idle" | "completed" | "failed" | "canceled";
 }
 
+export type ProviderInputPart =
+  { type: "text"; text: string } | { type: "localImage"; path: string; mimeType?: string };
+
+export type ProviderInput = string | ProviderInputPart[];
+
 export interface ProviderChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: ProviderInput;
 }
 
 export interface ProviderChatRequest {
@@ -158,8 +163,8 @@ export interface ProviderAdapter {
   listModels(signal?: AbortSignal): Promise<ProviderModel[]>;
   createSession(spec: ProviderSessionSpec, onEvent: ProviderEventSink): Promise<ProviderSession>;
   resumeSession(spec: ProviderSessionSpec, onEvent: ProviderEventSink): Promise<ProviderSession>;
-  send(sessionId: string, prompt: string): Promise<ProviderSession>;
-  steer(sessionId: string, prompt: string): Promise<void>;
+  send(sessionId: string, input: ProviderInput): Promise<ProviderSession>;
+  steer(sessionId: string, input: ProviderInput): Promise<void>;
   cancel(sessionId: string): Promise<void>;
   chat?(
     request: ProviderChatRequest,

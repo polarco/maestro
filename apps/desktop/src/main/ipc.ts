@@ -3,6 +3,7 @@ import { ipcMain } from "electron";
 import { z } from "zod";
 import {
   appSettingsUpdateSchema,
+  contextItemInputSchema,
   effortSchema,
   entityIdSchema,
   IPC_CHANNELS,
@@ -12,7 +13,10 @@ import {
   type CreateProviderConnectionInput,
   type CreateConversationInput,
   type CreateProjectInput,
+  type PrepareWorkspaceContextInput,
+  type SearchWorkspaceContextInput,
   type SendMessageInput,
+  type StageRecordedAudioInput,
   type UpdateConversationInput,
   type UpdateProjectInput,
   type UpdateProviderConnectionInput,
@@ -44,7 +48,7 @@ const updateConversationSchema = z
 const sendMessageSchema = z
   .object({
     conversationId: entityIdSchema,
-    content: z.string().min(1).max(2_000_000),
+    content: z.string().max(2_000_000),
     mode: runModeSchema,
     sessionKind: sessionKindSchema,
     providerId: z.string().min(1).max(120),
@@ -52,7 +56,52 @@ const sendMessageSchema = z
     modelId: z.string().min(1).max(200),
     effort: effortSchema,
     workspaceRootId: entityIdSchema,
-    attachmentPaths: z.array(z.string().min(1).max(8_192)).max(20),
+    contextItems: z.array(contextItemInputSchema).max(20),
+  })
+  .strict()
+  .refine((value) => value.content.trim().length > 0 || value.contextItems.length > 0, {
+    message: "Escreva uma mensagem ou adicione ao menos um item de contexto.",
+  });
+const searchWorkspaceContextSchema = z
+  .object({
+    projectId: entityIdSchema,
+    query: z.string().max(500),
+    limit: z.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+const prepareWorkspaceContextSchema = z
+  .object({
+    conversationId: entityIdSchema,
+    candidates: z
+      .array(
+        z
+          .object({
+            workspaceRootId: entityIdSchema,
+            relativePath: z.string().min(1).max(8_192),
+            kind: z.enum(["file", "directory"]),
+          })
+          .strict(),
+      )
+      .max(20),
+  })
+  .strict();
+const stageRecordingSchema = z
+  .object({
+    conversationId: entityIdSchema,
+    data: z.instanceof(Uint8Array).refine((value) => value.byteLength <= 2 * 1024 * 1024 * 1024),
+    mimeType: z
+      .string()
+      .min(1)
+      .max(200)
+      .refine((value) => /^audio\/(webm|ogg|mp4)(?:;|$)/i.test(value), {
+        message: "A gravação precisa usar um formato de áudio compatível.",
+      }),
+    durationMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(24 * 60 * 60_000)
+      .optional(),
   })
   .strict();
 const configureProviderSchema = z
@@ -106,7 +155,54 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
 
   handle(IPC_CHANNELS.bootstrap, () => application.bootstrap());
   handle(IPC_CHANNELS.selectDirectory, () => application.selectDirectory());
-  handle(IPC_CHANNELS.selectAttachments, () => application.selectAttachments());
+  handle(IPC_CHANNELS.contextSelectFiles, (_event, conversationId: string) =>
+    application.selectContextFiles(entityIdSchema.parse(conversationId)),
+  );
+  handle(IPC_CHANNELS.contextSelectFolder, (_event, conversationId: string) =>
+    application.selectContextFolder(entityIdSchema.parse(conversationId)),
+  );
+  handle(IPC_CHANNELS.contextStageDrop, (_event, conversationId: string, paths: string[]) =>
+    application.stageDroppedFiles(
+      entityIdSchema.parse(conversationId),
+      z.array(z.string().min(1).max(8_192)).max(20).parse(paths),
+    ),
+  );
+  handle(IPC_CHANNELS.contextStageClipboard, (_event, conversationId: string) =>
+    application.stageClipboard(entityIdSchema.parse(conversationId)),
+  );
+  handle(IPC_CHANNELS.contextStageRecording, (_event, input: StageRecordedAudioInput) => {
+    const parsed = stageRecordingSchema.parse(input);
+    return application.stageRecordedAudio({
+      conversationId: parsed.conversationId,
+      data: parsed.data,
+      mimeType: parsed.mimeType,
+      ...(parsed.durationMs === undefined ? {} : { durationMs: parsed.durationMs }),
+    });
+  });
+  handle(IPC_CHANNELS.contextSearchWorkspace, (_event, input: SearchWorkspaceContextInput) => {
+    const parsed = searchWorkspaceContextSchema.parse(input);
+    return application.searchWorkspaceContext({
+      projectId: parsed.projectId,
+      query: parsed.query,
+      ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
+    });
+  });
+  handle(IPC_CHANNELS.contextPrepareWorkspace, (_event, input: PrepareWorkspaceContextInput) =>
+    application.prepareWorkspaceContext(prepareWorkspaceContextSchema.parse(input)),
+  );
+  handle(IPC_CHANNELS.contextList, (_event, conversationId: string) =>
+    application.listContextAssets(entityIdSchema.parse(conversationId)),
+  );
+  handle(IPC_CHANNELS.contextRemove, (_event, conversationId: string, assetId: string) =>
+    application.removeContextAsset(
+      entityIdSchema.parse(conversationId),
+      entityIdSchema.parse(assetId),
+    ),
+  );
+  handle(IPC_CHANNELS.localModelState, () => application.getLocalModelState());
+  handle(IPC_CHANNELS.localModelDownload, () => application.downloadLocalModel());
+  handle(IPC_CHANNELS.localModelCancel, () => application.cancelLocalModelDownload());
+  handle(IPC_CHANNELS.localModelRemove, () => application.removeLocalModel());
   handle(IPC_CHANNELS.projectCreate, (_event, input: CreateProjectInput) =>
     application.createProject(createProjectSchema.parse(input)),
   );
@@ -170,7 +266,7 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
       modelId: parsed.modelId,
       effort: parsed.effort,
       workspaceRootId: parsed.workspaceRootId,
-      attachmentPaths: parsed.attachmentPaths,
+      contextItems: parsed.contextItems,
       ...(parsed.providerConnectionId ? { providerConnectionId: parsed.providerConnectionId } : {}),
     });
   });

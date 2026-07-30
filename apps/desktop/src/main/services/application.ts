@@ -1,12 +1,14 @@
 import path from "node:path";
 import { realpath } from "node:fs/promises";
-import { app, dialog, nativeTheme } from "electron";
+import { app, clipboard, dialog, nativeTheme } from "electron";
 import {
   DEFAULT_APP_SETTINGS,
   appSettingsSchema,
   type AppSettings,
   type BootstrapPayload,
   type ConfigureProviderInput,
+  type ContextAssetSummary,
+  type ContextProcessingEvent,
   type CreateProviderConnectionInput,
   type Conversation,
   type ConversationDetail,
@@ -15,6 +17,7 @@ import {
   type EventPage,
   type PlanSpec,
   type Project,
+  type LocalModelPackageState,
   type ProviderSummary,
   type ProviderConnectionSummary,
   type RunDetail,
@@ -22,6 +25,10 @@ import {
   type RunState,
   type SendMessageInput,
   type SendMessageResult,
+  type PrepareWorkspaceContextInput,
+  type SearchWorkspaceContextInput,
+  type StageRecordedAudioInput,
+  type WorkspaceContextCandidate,
   type TerminalEvent,
   type TerminalSessionDto,
   type UpdateConversationInput,
@@ -38,6 +45,7 @@ import { VaultService } from "./vault.js";
 import { OrchestrationService } from "./orchestration.js";
 import { TerminalService } from "./terminal.js";
 import { UpdateService } from "./update-service.js";
+import { ContextService } from "./context-service.js";
 
 interface Grant {
   path: string;
@@ -60,14 +68,16 @@ export class ApplicationService {
   readonly vault: VaultService;
   readonly providers: ProviderRegistry;
   readonly orchestration: OrchestrationService;
+  readonly context: ContextService;
   readonly terminal: TerminalService;
   readonly updates: UpdateService;
   readonly #directoryGrants = new Map<string, Grant>();
-  readonly #attachmentGrants = new Map<string, Grant>();
   #settingsUpdateTail: Promise<void> = Promise.resolve();
   #runEventHandler: (event: RunEvent) => void = () => {};
   #terminalEventHandler: (event: TerminalEvent) => void = () => {};
   #updateEventHandler: (state: UpdateState) => void = () => {};
+  #contextEventHandler: (event: ContextProcessingEvent) => void = () => {};
+  #localModelEventHandler: (state: LocalModelPackageState) => void = () => {};
 
   constructor(userDataDirectory = app.getPath("userData")) {
     this.repository = new MaestroRepository(path.join(userDataDirectory, "maestro.db"));
@@ -79,11 +89,18 @@ export class ApplicationService {
       supervisor: this.supervisor,
       userDataDirectory,
     });
+    this.context = new ContextService({
+      repository: this.repository,
+      userDataDirectory,
+      emitContext: (event) => this.#contextEventHandler(event),
+      emitModel: (state) => this.#localModelEventHandler(state),
+    });
     this.orchestration = new OrchestrationService({
       repository: this.repository,
       providers: this.providers,
       supervisor: this.supervisor,
       userDataDirectory,
+      context: this.context,
       emit: (event) => this.#runEventHandler(event),
     });
     this.terminal = new TerminalService(this.repository, (event) =>
@@ -96,18 +113,25 @@ export class ApplicationService {
     run: (event: RunEvent) => void;
     terminal: (event: TerminalEvent) => void;
     update: (state: UpdateState) => void;
+    context: (event: ContextProcessingEvent) => void;
+    localModel: (state: LocalModelPackageState) => void;
   }): void {
     this.#runEventHandler = input.run;
     this.#terminalEventHandler = input.terminal;
     this.#updateEventHandler = input.update;
+    this.#contextEventHandler = input.context;
+    this.#localModelEventHandler = input.localModel;
   }
 
   async initialize(): Promise<void> {
     this.repository.pruneConversationDrafts();
+    await this.context.initialize();
     const settings = await this.repository.getSettings();
     nativeTheme.themeSource = settings.theme;
     this.updates.configure(settings);
     await this.providers.refresh();
+    const activeProjectId = await this.repository.getActiveProjectId();
+    if (activeProjectId) this.context.warmProject(activeProjectId);
     const e2eWorkspace = process.env.MAESTRO_E2E_WORKSPACE;
     if (!app.isPackaged && e2eWorkspace) {
       this.#grant(this.#directoryGrants, await canonicalizeDirectory(e2eWorkspace));
@@ -162,22 +186,184 @@ export class ApplicationService {
     return selected;
   }
 
-  async selectAttachments(): Promise<string[]> {
+  async selectContextFiles(conversationId: string): Promise<ContextAssetSummary[]> {
+    await this.repository.getConversation(conversationId);
     const result = await dialog.showOpenDialog({
       title: "Adicionar anexos",
       properties: ["openFile", "multiSelections"],
       filters: [
         {
           name: "Arquivos suportados",
-          extensions: ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "json"],
+          extensions: [
+            "png",
+            "jpg",
+            "jpeg",
+            "gif",
+            "webp",
+            "bmp",
+            "tif",
+            "tiff",
+            "avif",
+            "pdf",
+            "txt",
+            "md",
+            "markdown",
+            "json",
+            "jsonl",
+            "yaml",
+            "yml",
+            "csv",
+            "tsv",
+            "log",
+            "docx",
+            "xlsx",
+            "pptx",
+            "odt",
+            "ods",
+            "odp",
+            "rtf",
+            "epub",
+            "mp3",
+            "wav",
+            "m4a",
+            "aac",
+            "ogg",
+            "oga",
+            "flac",
+            "opus",
+            "webm",
+            "mp4",
+            "mov",
+            "mkv",
+            "avi",
+            "m4v",
+            "js",
+            "jsx",
+            "ts",
+            "tsx",
+            "py",
+            "rb",
+            "go",
+            "rs",
+            "java",
+            "kt",
+            "swift",
+            "c",
+            "h",
+            "cpp",
+            "hpp",
+            "css",
+            "scss",
+            "sql",
+            "sh",
+            "toml",
+            "ini",
+            "xml",
+            "html",
+            "htm",
+          ],
         },
         { name: "Todos os arquivos", extensions: ["*"] },
       ],
     });
     if (result.canceled) return [];
-    for (const selected of result.filePaths)
-      this.#grant(this.#attachmentGrants, await realpath(selected));
-    return result.filePaths;
+    return this.context.stageFiles(conversationId, result.filePaths);
+  }
+
+  async selectContextFolder(conversationId: string): Promise<ContextAssetSummary[]> {
+    await this.repository.getConversation(conversationId);
+    const result = await dialog.showOpenDialog({
+      title: "Adicionar pasta como contexto",
+      properties: ["openDirectory"],
+      buttonLabel: "Adicionar pasta",
+    });
+    const selected = result.canceled ? null : result.filePaths[0];
+    return selected ? [await this.context.stageFolder(conversationId, selected)] : [];
+  }
+
+  stageDroppedFiles(conversationId: string, paths: string[]): Promise<ContextAssetSummary[]> {
+    return this.context.stageFiles(conversationId, paths);
+  }
+
+  async stageClipboard(conversationId: string): Promise<ContextAssetSummary[]> {
+    const image = clipboard.readImage();
+    if (!image.isEmpty()) {
+      return [
+        await this.context.stageBuffer({
+          conversationId,
+          data: image.toPNG(),
+          name: `imagem-colada-${Date.now()}.png`,
+          mimeType: "image/png",
+          source: "clipboard",
+        }),
+      ];
+    }
+    const text = clipboard.readText().trim();
+    if (!text)
+      throw new MaestroError(
+        "CLIPBOARD_EMPTY",
+        "A área de transferência não contém mídia ou texto.",
+        {
+          recoverable: true,
+        },
+      );
+    return [
+      await this.context.stageBuffer({
+        conversationId,
+        data: Buffer.from(text, "utf8"),
+        name: `texto-colado-${Date.now()}.txt`,
+        mimeType: "text/plain",
+        source: "clipboard",
+      }),
+    ];
+  }
+
+  stageRecordedAudio(input: StageRecordedAudioInput): Promise<ContextAssetSummary> {
+    const extension = input.mimeType.includes("ogg")
+      ? "ogg"
+      : input.mimeType.includes("mp4")
+        ? "m4a"
+        : "webm";
+    return this.context.stageBuffer({
+      conversationId: input.conversationId,
+      data: input.data,
+      name: `gravacao-${Date.now()}.${extension}`,
+      mimeType: input.mimeType,
+      source: "recording",
+      ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
+    });
+  }
+
+  searchWorkspaceContext(input: SearchWorkspaceContextInput): Promise<WorkspaceContextCandidate[]> {
+    return this.context.searchWorkspace(input.projectId, input.query, input.limit);
+  }
+
+  prepareWorkspaceContext(input: PrepareWorkspaceContextInput): Promise<ContextAssetSummary[]> {
+    return this.context.prepareWorkspace(input.conversationId, input.candidates);
+  }
+
+  listContextAssets(conversationId: string): Promise<ContextAssetSummary[]> {
+    return this.context.list(conversationId);
+  }
+
+  removeContextAsset(conversationId: string, assetId: string): Promise<void> {
+    return this.context.remove(conversationId, assetId);
+  }
+
+  getLocalModelState(): LocalModelPackageState {
+    return this.context.getLocalModelState();
+  }
+
+  downloadLocalModel(): LocalModelPackageState {
+    return this.context.downloadLocalModel();
+  }
+
+  cancelLocalModelDownload(): Promise<LocalModelPackageState> {
+    return this.context.cancelLocalModelDownload();
+  }
+
+  removeLocalModel(): Promise<LocalModelPackageState> {
+    return this.context.removeLocalModel();
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
@@ -187,12 +373,14 @@ export class ApplicationService {
       canonicalPath,
       "A pasta precisa ser selecionada pelo diálogo nativo.",
     );
-    return this.repository.createProject({
+    const project = await this.repository.createProject({
       name: input.name.trim() || path.basename(canonicalPath),
       path: input.directory,
       canonicalPath,
       displayName: path.basename(canonicalPath),
     });
+    this.context.warmProject(project.id);
+    return project;
   }
 
   listProjects(): Promise<Project[]> {
@@ -201,6 +389,7 @@ export class ApplicationService {
 
   async selectProject(projectId: string): Promise<BootstrapPayload> {
     await this.repository.selectProject(projectId);
+    this.context.warmProject(projectId);
     return this.bootstrap(projectId);
   }
 
@@ -221,7 +410,9 @@ export class ApplicationService {
         { recoverable: true },
       );
     const activeProjectId = await this.repository.getActiveProjectId();
+    await this.context.removeProjectFiles(projectId);
     await this.repository.deleteProject(projectId);
+    this.context.invalidateProject(projectId);
     const remaining = await this.repository.listProjects();
     const nextProjectId =
       activeProjectId === projectId ? (remaining[0]?.id ?? null) : activeProjectId;
@@ -236,11 +427,14 @@ export class ApplicationService {
       canonicalPath,
       "A pasta precisa ser selecionada pelo diálogo nativo.",
     );
-    return this.repository.addWorkspaceRoot(projectId, {
+    const project = await this.repository.addWorkspaceRoot(projectId, {
       path: directory,
       canonicalPath,
       displayName: path.basename(canonicalPath),
     });
+    this.context.invalidateProject(projectId);
+    this.context.warmProject(projectId);
+    return project;
   }
 
   async removeProjectRoot(projectId: string, workspaceRootId: string): Promise<Project> {
@@ -266,7 +460,10 @@ export class ApplicationService {
         "Encerre o terminal aberto nesta pasta antes de removê-la do projeto.",
         { recoverable: true },
       );
-    return this.repository.removeWorkspaceRoot(projectId, workspaceRootId);
+    const project = await this.repository.removeWorkspaceRoot(projectId, workspaceRootId);
+    this.context.invalidateProject(projectId);
+    this.context.warmProject(projectId);
+    return project;
   }
 
   createConversation(input: CreateConversationInput): Promise<Conversation> {
@@ -284,6 +481,7 @@ export class ApplicationService {
   }
 
   async getConversation(conversationId: string): Promise<ConversationDetail> {
+    await this.context.refreshWorkspaceReferences(conversationId);
     const [conversation, messages, runs] = await Promise.all([
       this.repository.getConversation(conversationId),
       this.repository.listMessages(conversationId),
@@ -307,22 +505,12 @@ export class ApplicationService {
         "A conversa possui uma execução ativa. Cancele ou aguarde a conclusão antes de excluí-la.",
         { recoverable: true },
       );
+    await this.context.removeConversationFiles(conversationId);
     await this.repository.deleteConversation(conversationId);
   }
 
   async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
-    const attachmentPaths = await Promise.all(
-      input.attachmentPaths.map((attachmentPath) => realpath(attachmentPath)),
-    );
-    for (const attachmentPath of attachmentPaths) {
-      this.#consume(
-        this.#attachmentGrants,
-        attachmentPath,
-        "Anexo não autorizado pelo diálogo nativo.",
-        false,
-      );
-    }
-    return this.orchestration.sendMessage({ ...input, attachmentPaths });
+    return this.orchestration.sendMessage(input);
   }
 
   getRun(runId: string): Promise<RunDetail> {
@@ -452,6 +640,7 @@ export class ApplicationService {
     this.updates.dispose();
     this.terminal.dispose();
     await this.orchestration.dispose();
+    await this.context.dispose();
     await this.providers.dispose();
     await this.supervisor.killAll();
     this.vault.lock();

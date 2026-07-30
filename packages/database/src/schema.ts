@@ -1,5 +1,22 @@
-import type { AppSettings, Attachment, PlanSpec, RunSpec, TaskSpec } from "@maestro/contracts";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type {
+  AppSettings,
+  Attachment,
+  ContextAssetChangeState,
+  ContextAssetKind,
+  ContextAssetSource,
+  ContextAssetStatus,
+  PlanSpec,
+  RunSpec,
+  TaskSpec,
+} from "@maestro/contracts";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable(
   "projects",
@@ -72,6 +89,88 @@ export const messages = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [index("messages_conversation_created_idx").on(table.conversationId, table.createdAt)],
+);
+
+export const contextAssets = sqliteTable(
+  "context_assets",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    workspaceRootId: text("workspace_root_id").references(() => workspaceRoots.id, {
+      onDelete: "set null",
+    }),
+    source: text("source").$type<ContextAssetSource>().notNull(),
+    kind: text("kind").$type<ContextAssetKind>().notNull(),
+    status: text("status").$type<ContextAssetStatus>().notNull(),
+    changeState: text("change_state").$type<ContextAssetChangeState>().notNull(),
+    name: text("name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    size: integer("size").notNull(),
+    relativePath: text("relative_path"),
+    sourcePath: text("source_path"),
+    managedPath: text("managed_path"),
+    thumbnailPath: text("thumbnail_path"),
+    contentHash: text("content_hash"),
+    currentHash: text("current_hash"),
+    sourceModifiedAt: text("source_modified_at"),
+    durationMs: integer("duration_ms"),
+    pageCount: integer("page_count"),
+    extractedText: text("extracted_text"),
+    transcription: text("transcription"),
+    framePaths: text("frame_paths", { mode: "json" }).$type<string[]>().notNull(),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    warning: text("warning"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("context_assets_conversation_idx").on(table.conversationId, table.createdAt),
+    index("context_assets_project_source_idx").on(
+      table.projectId,
+      table.source,
+      table.workspaceRootId,
+    ),
+    index("context_assets_hash_idx").on(table.conversationId, table.contentHash),
+  ],
+);
+
+export const messageContextAssets = sqliteTable(
+  "message_context_assets",
+  {
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => contextAssets.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.messageId, table.assetId] }),
+    uniqueIndex("message_context_assets_order_uidx").on(table.messageId, table.ordinal),
+    index("message_context_assets_asset_idx").on(table.assetId),
+  ],
+);
+
+export const contextChunks = sqliteTable(
+  "context_chunks",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => contextAssets.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    content: text("content").notNull(),
+    tokenCount: integer("token_count").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("context_chunks_asset_order_uidx").on(table.assetId, table.ordinal)],
 );
 
 export const runs = sqliteTable(
@@ -249,6 +348,9 @@ export const schema = {
   workspaceRoots,
   conversations,
   messages,
+  contextAssets,
+  messageContextAssets,
+  contextChunks,
   runs,
   plans,
   taskRuns,

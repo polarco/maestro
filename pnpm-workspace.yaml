@@ -7,4 +7,9 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  ffmpeg-static: true
   node-pty: true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
+  tesseract.js: true

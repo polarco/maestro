@@ -75,6 +75,81 @@ export const attachmentSchema = z.object({
 });
 export type Attachment = z.infer<typeof attachmentSchema>;
 
+export const contextAssetSourceSchema = z.enum(["upload", "workspace", "clipboard", "recording"]);
+export type ContextAssetSource = z.infer<typeof contextAssetSourceSchema>;
+
+export const contextAssetKindSchema = z.enum([
+  "image",
+  "document",
+  "text",
+  "audio",
+  "video",
+  "folder",
+  "unknown",
+]);
+export type ContextAssetKind = z.infer<typeof contextAssetKindSchema>;
+
+export const contextAssetStatusSchema = z.enum([
+  "staging",
+  "processing",
+  "needs_model",
+  "ready",
+  "error",
+  "missing",
+]);
+export type ContextAssetStatus = z.infer<typeof contextAssetStatusSchema>;
+
+export const contextAssetChangeStateSchema = z.enum([
+  "not_applicable",
+  "current",
+  "changed",
+  "missing",
+]);
+export type ContextAssetChangeState = z.infer<typeof contextAssetChangeStateSchema>;
+
+/** Renderer-safe asset metadata. Private paths never cross IPC. */
+export const contextAssetSummarySchema = z.object({
+  id: entityIdSchema,
+  projectId: entityIdSchema,
+  conversationId: entityIdSchema,
+  source: contextAssetSourceSchema,
+  kind: contextAssetKindSchema,
+  status: contextAssetStatusSchema,
+  changeState: contextAssetChangeStateSchema,
+  name: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  workspaceRootId: entityIdSchema.nullable(),
+  relativePath: z.string().nullable(),
+  contentHash: z.string().nullable(),
+  sourceModifiedAt: isoDateSchema.nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  pageCount: z.number().int().positive().nullable(),
+  previewUrl: z.string().nullable(),
+  thumbnailUrl: z.string().nullable(),
+  requiresVision: z.boolean(),
+  extractedTextAvailable: z.boolean(),
+  transcription: z.string().nullable(),
+  warning: z.string().nullable(),
+  error: z.string().nullable(),
+  createdAt: isoDateSchema,
+  updatedAt: isoDateSchema,
+});
+export type ContextAssetSummary = z.infer<typeof contextAssetSummarySchema>;
+
+export const contextItemInputSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("asset"), assetId: entityIdSchema }).strict(),
+  z
+    .object({
+      type: z.literal("workspace"),
+      workspaceRootId: entityIdSchema,
+      relativePath: z.string().min(1).max(8_192),
+      kind: z.enum(["file", "directory"]),
+    })
+    .strict(),
+]);
+export type ContextItemInput = z.infer<typeof contextItemInputSchema>;
+
 export const conversationSchema = z.object({
   id: entityIdSchema,
   projectId: entityIdSchema,
@@ -99,6 +174,7 @@ export const messageSchema = z.object({
   content: z.string(),
   status: messageStatusSchema,
   attachments: z.array(attachmentSchema),
+  contextAssets: z.array(contextAssetSummarySchema).default([]),
   providerMessageId: z.string().nullable(),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
@@ -220,6 +296,7 @@ export const runSpecSchema = z.object({
   conversationId: entityIdSchema,
   workspaceRootIds: z.array(entityIdSchema).min(1),
   prompt: z.string().min(1),
+  contextAssetIds: z.array(entityIdSchema).default([]),
   requestedModel: modelSelectionSchema.nullable(),
   roleModels: z.record(z.string(), modelSelectionSchema).default({}),
   permissions: permissionSpecSchema,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
 import type {
   Effort,
   ProviderAdapter,
@@ -9,6 +10,7 @@ import type {
   ProviderHealth,
   ProviderConnection,
   ProviderModel,
+  ProviderInput,
   ProviderSession,
   ProviderSessionSpec,
 } from "@maestro/contracts";
@@ -18,6 +20,23 @@ import { configString, type ProviderDependencies } from "./types.js";
 import { subscriptionEnvironment } from "./subscription-environment.js";
 
 type JsonRecord = Record<string, unknown>;
+
+export async function claudeContentBlocks(input: ProviderInput): Promise<JsonRecord[]> {
+  const parts = typeof input === "string" ? [{ type: "text" as const, text: input }] : input;
+  return Promise.all(
+    parts.map(async (part): Promise<JsonRecord> => {
+      if (part.type === "text") return { type: "text", text: part.text };
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: part.mimeType ?? "image/jpeg",
+          data: (await readFile(part.path)).toString("base64"),
+        },
+      };
+    }),
+  );
+}
 
 interface ClaudeSessionRecord {
   session: ProviderSession;
@@ -179,7 +198,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return this.createSession(spec, onEvent);
   }
 
-  async send(sessionId: string, prompt: string): Promise<ProviderSession> {
+  async send(sessionId: string, input: ProviderInput): Promise<ProviderSession> {
     const record = this.#requireSession(sessionId);
     if (record.completion)
       throw new MaestroError("SESSION_BUSY", "A sessão Claude Code já possui um turno ativo.", {
@@ -197,7 +216,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     record.process.child.stdin.write(
       `${JSON.stringify({
         type: "user",
-        message: { role: "user", content: [{ type: "text", text: prompt }] },
+        message: { role: "user", content: await claudeContentBlocks(input) },
       })}\n`,
     );
     await completion;
@@ -205,7 +224,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     return { ...record.session };
   }
 
-  steer(sessionId: string, prompt: string): Promise<void> {
+  async steer(sessionId: string, input: ProviderInput): Promise<void> {
     const record = this.#requireSession(sessionId);
     if (!record.completion || !record.process?.child.stdin.writable) {
       throw new MaestroError(
@@ -217,10 +236,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     record.process.child.stdin.write(
       `${JSON.stringify({
         type: "user",
-        message: { role: "user", content: [{ type: "text", text: prompt }] },
+        message: { role: "user", content: await claudeContentBlocks(input) },
       })}\n`,
     );
-    return Promise.resolve();
   }
 
   async cancel(sessionId: string): Promise<void> {

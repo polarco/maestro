@@ -1,8 +1,12 @@
 import path from "node:path";
-import { app, BrowserWindow, session } from "electron";
+import { app, BrowserWindow, protocol, session } from "electron";
 import { IPC_CHANNELS } from "@maestro/contracts";
 import { ApplicationService } from "./services/application.js";
 import { registerIpc } from "./ipc.js";
+import {
+  registerAttachmentProtocol,
+  unregisterAttachmentProtocol,
+} from "./services/attachment-protocol.js";
 
 let mainWindow: BrowserWindow | null = null;
 let application: ApplicationService | null = null;
@@ -10,6 +14,12 @@ let unregisterIpc: (() => void) | null = null;
 let disposing = false;
 
 app.setName("Maestro");
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "maestro-attachment",
+    privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -50,6 +60,7 @@ async function dispose(): Promise<void> {
   disposing = true;
   unregisterIpc?.();
   unregisterIpc = null;
+  unregisterAttachmentProtocol();
   await application?.dispose();
   application = null;
 }
@@ -67,17 +78,36 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       app.setAppUserModelId("dev.maestro.desktop");
-      session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
-        callback(false),
-      );
-      session.defaultSession.setPermissionCheckHandler(() => false);
       mainWindow = createWindow();
+      session.defaultSession.setPermissionRequestHandler(
+        (webContents, permission, callback, details) => {
+          const mediaTypes = "mediaTypes" in details ? details.mediaTypes : undefined;
+          callback(
+            webContents.id === mainWindow?.webContents.id &&
+              permission === "media" &&
+              Boolean(mediaTypes?.length) &&
+              mediaTypes!.every((type) => type === "audio"),
+          );
+        },
+      );
+      session.defaultSession.setPermissionCheckHandler(
+        (webContents, permission, _origin, details) =>
+          Boolean(
+            webContents?.id === mainWindow?.webContents.id &&
+            permission === "media" &&
+            details.isMainFrame &&
+            details.mediaType === "audio",
+          ),
+      );
       application = new ApplicationService();
       application.setEventHandlers({
         run: (event) => mainWindow?.webContents.send(IPC_CHANNELS.eventRun, event),
         terminal: (event) => mainWindow?.webContents.send(IPC_CHANNELS.eventTerminal, event),
         update: (state) => mainWindow?.webContents.send(IPC_CHANNELS.eventUpdate, state),
+        context: (event) => mainWindow?.webContents.send(IPC_CHANNELS.eventContext, event),
+        localModel: (state) => mainWindow?.webContents.send(IPC_CHANNELS.eventLocalModel, state),
       });
+      registerAttachmentProtocol(application.context);
       unregisterIpc = registerIpc(application, mainWindow);
       await application.initialize();
       await loadWindow(mainWindow);

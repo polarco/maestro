@@ -6,14 +6,16 @@ import { z } from "zod";
 import {
   analysisResultSchema,
   type AnalysisResult,
-  type Attachment,
   type Conversation,
   type Effort,
   type Message,
+  type ModelCapability,
   type ModelSelection,
   type NewRunEvent,
   type PlanSpec,
   type ProviderChatMessage,
+  type ProviderInput,
+  type ProviderInputPart,
   type ProviderEventSink,
   type ProviderSession,
   type ProviderSessionSpec,
@@ -27,7 +29,7 @@ import {
   type TaskSpec,
   type WorkspaceRoot,
 } from "@maestro/contracts";
-import type { MaestroRepository } from "@maestro/database";
+import type { ContextAssetRecord, MaestroRepository } from "@maestro/database";
 import {
   assertCommandAllowed,
   assertPathWithinRoots,
@@ -42,6 +44,7 @@ import {
 import type { ProviderRegistry } from "../providers/registry.js";
 import type { ProcessSupervisor } from "./process-supervisor.js";
 import { GitService, type TaskWorktree } from "./git-service.js";
+import type { ContextService } from "./context-service.js";
 
 const generatedTaskSchema = z.object({
   key: z.string().min(1).max(80),
@@ -180,20 +183,21 @@ function titleFromPrompt(prompt: string): string {
   return normalized.length > 56 ? `${normalized.slice(0, 53)}…` : normalized || "Nova conversa";
 }
 
-function mimeType(filename: string): string {
-  const extension = path.extname(filename).toLowerCase();
-  const types: Record<string, string> = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".pdf": "application/pdf",
-    ".json": "application/json",
-    ".md": "text/markdown",
-    ".txt": "text/plain",
-  };
-  return types[extension] ?? "application/octet-stream";
+function inputText(input: ProviderInput): string {
+  return typeof input === "string"
+    ? input
+    : input
+        .filter(
+          (part): part is Extract<ProviderInputPart, { type: "text" }> => part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n\n");
+}
+
+function mergeInputs(inputs: readonly ProviderInput[]): ProviderInputPart[] {
+  return inputs.flatMap((input) =>
+    typeof input === "string" ? [{ type: "text" as const, text: input }] : input,
+  );
 }
 
 export class OrchestrationService {
@@ -201,6 +205,7 @@ export class OrchestrationService {
   readonly #providers: ProviderRegistry;
   readonly #supervisor: ProcessSupervisor;
   readonly #git: GitService;
+  readonly #context: ContextService;
   readonly #emit: (event: RunEvent) => void;
   readonly #chatSandbox: string;
   readonly #controllers = new Map<string, AbortController>();
@@ -212,12 +217,14 @@ export class OrchestrationService {
     providers: ProviderRegistry;
     supervisor: ProcessSupervisor;
     userDataDirectory: string;
+    context: ContextService;
     emit: (event: RunEvent) => void;
   }) {
     this.#repository = input.repository;
     this.#providers = input.providers;
     this.#supervisor = input.supervisor;
     this.#git = new GitService(input.supervisor, input.userDataDirectory);
+    this.#context = input.context;
     this.#chatSandbox = path.join(input.userDataDirectory, "chat-sandbox");
     this.#emit = input.emit;
   }
@@ -238,12 +245,33 @@ export class OrchestrationService {
         { recoverable: true },
       );
     }
-    const attachments = await this.#attachments(input.attachmentPaths);
+    const contextAssets = await this.#context.resolveItems(conversation.id, input.contextItems);
+    if (
+      contextAssets.some((asset) => asset.kind === "image" || asset.metadata.scannedPdf === true)
+    ) {
+      const selected = this.#providers.resolve(
+        {
+          providerId: input.providerId,
+          modelId: input.modelId,
+          ...(input.providerConnectionId ? { connectionId: input.providerConnectionId } : {}),
+          effort: input.effort,
+        },
+        input.mode === "maestro" ? "orchestrator" : input.mode === "agent" ? "direct" : "chat",
+      ).selection;
+      if (!this.#modelCapability(selected).vision)
+        throw new MaestroError(
+          "MODEL_VISION_REQUIRED",
+          "Os itens selecionados exigem um modelo com visão. Escolha outro modelo antes de enviar.",
+          { recoverable: true },
+        );
+    }
+    const effectiveContent =
+      input.content.trim() || (contextAssets.length > 0 ? "Analise os itens anexados" : "");
     const userMessage = await this.#repository.addMessage({
       conversationId: conversation.id,
       role: "user",
       content: input.content,
-      attachments,
+      contextAssetIds: contextAssets.map((asset) => asset.id),
     });
     const assistantMessage = await this.#repository.addMessage({
       conversationId: conversation.id,
@@ -252,7 +280,9 @@ export class OrchestrationService {
       status: "streaming",
     });
     const updatedConversation = await this.#repository.updateConversation(conversation.id, {
-      ...(conversation.title === "Nova conversa" ? { title: titleFromPrompt(input.content) } : {}),
+      ...(conversation.title === "Nova conversa"
+        ? { title: titleFromPrompt(input.content || contextAssets[0]?.name || effectiveContent) }
+        : {}),
       mode: input.mode,
       sessionKind: input.sessionKind,
       providerId: input.providerId,
@@ -260,20 +290,35 @@ export class OrchestrationService {
       modelId: input.modelId,
       workspaceRootId: input.workspaceRootId,
       ...(conversation.providerId !== input.providerId ||
-      conversation.providerConnectionId !== (input.providerConnectionId ?? null)
+      conversation.providerConnectionId !== (input.providerConnectionId ?? null) ||
+      conversation.modelId !== input.modelId ||
+      conversation.mode !== input.mode ||
+      conversation.sessionKind !== input.sessionKind ||
+      conversation.workspaceRootId !== input.workspaceRootId
         ? { providerSessionId: null }
         : {}),
     });
 
     if (input.mode === "chat") {
       this.#trackChat(updatedConversation);
-      void this.#runChat(updatedConversation, root, input, assistantMessage)
+      void this.#runChat(
+        updatedConversation,
+        root,
+        { ...input, content: effectiveContent },
+        assistantMessage,
+        contextAssets,
+      )
         .catch((error) => this.#failMessage(assistantMessage.id, error))
         .finally(() => this.#untrackChat(updatedConversation.id));
       return { conversation: updatedConversation, userMessage, assistantMessage, run: null };
     }
 
-    const run = await this.#createRun(updatedConversation, root, input);
+    const run = await this.#createRun(
+      updatedConversation,
+      root,
+      { ...input, content: effectiveContent },
+      contextAssets,
+    );
     await this.#repository.updateMessage(assistantMessage.id, { runId: run.id });
     if (input.mode === "maestro") {
       void this.#planRun(run.id, assistantMessage.id).catch((error) =>
@@ -401,6 +446,7 @@ export class OrchestrationService {
     conversation: Conversation,
     root: WorkspaceRoot,
     input: SendMessageInput,
+    contextAssets: readonly ContextAssetRecord[],
   ): Promise<Run> {
     const settings = await this.#repository.getSettings();
     const commands = await this.#discoverValidationCommands(root.canonicalPath);
@@ -411,6 +457,7 @@ export class OrchestrationService {
       conversationId: conversation.id,
       workspaceRootIds: [root.id],
       prompt: input.content,
+      contextAssetIds: contextAssets.map((asset) => asset.id),
       requestedModel: {
         providerId: input.providerId,
         ...(input.providerConnectionId ? { connectionId: input.providerConnectionId } : {}),
@@ -450,6 +497,7 @@ export class OrchestrationService {
     _root: WorkspaceRoot,
     input: SendMessageInput,
     assistantMessage: Message,
+    contextAssets: readonly ContextAssetRecord[],
   ): Promise<void> {
     const resolved = this.#providers.resolve(
       {
@@ -463,17 +511,17 @@ export class OrchestrationService {
     const { adapter, selection, connection } = resolved;
     if (!connection)
       throw new MaestroError("PAID_API_BLOCKED", "Chat usa somente contas por assinatura.");
+    const capability = this.#modelCapability(selection);
+    const compiled = await this.#context.compile(contextAssets, input.content, {
+      vision: capability.vision,
+      contextWindow: capability.contextWindow,
+    });
     const history = await this.#repository.listMessages(conversation.id);
-    const messages: ProviderChatMessage[] = history
-      .filter(
-        (message) =>
-          message.id !== assistantMessage.id &&
-          (message.role === "user" || message.role === "assistant" || message.role === "system"),
-      )
-      .map((message) => ({
-        role: message.role as "user" | "assistant" | "system",
-        content: message.content,
-      }));
+    const messages = history.filter(
+      (message) =>
+        message.id !== assistantMessage.id &&
+        (message.role === "user" || message.role === "assistant" || message.role === "system"),
+    );
     await mkdir(this.#chatSandbox, { recursive: true, mode: 0o700 });
     let content = "";
     const sink: ProviderEventSink = (event) => {
@@ -485,36 +533,87 @@ export class OrchestrationService {
         content = event.data.content || content;
       }
     };
-    const session = await adapter.createSession(
-      {
-        runId: `chat:${assistantMessage.id}`,
-        connectionId: connection.id,
-        mode: "chat",
-        cwd: this.#chatSandbox,
-        workspaceRoots: [],
-        model: selection.modelId,
-        effort: selection.effort ?? "medium",
-        permissions: {
-          readWorkspace: false,
-          writeWorkspace: false,
-          runCommands: false,
-          network: false,
-          allowedCommands: [],
-          deniedCommands: ["sudo", "su", "ssh", "curl", "wget"],
-        },
-        budget: { maxTokens: null, maxCostUsd: null, maxDurationMinutes: 30, maxTurns: 8 },
-        tools: [],
-        systemPrompt:
-          "Converse de forma útil, sem acessar arquivos, workspace, terminal ou ferramentas. Não execute ações externas.",
+    const sessionSpec: ProviderSessionSpec = {
+      runId: `chat:${assistantMessage.id}`,
+      connectionId: connection.id,
+      mode: "chat",
+      cwd: this.#chatSandbox,
+      workspaceRoots: [],
+      model: selection.modelId,
+      effort: selection.effort ?? "medium",
+      permissions: {
+        readWorkspace: false,
+        writeWorkspace: false,
+        runCommands: false,
+        network: false,
+        allowedCommands: [],
+        deniedCommands: ["sudo", "su", "ssh", "curl", "wget"],
       },
-      sink,
-    );
+      budget: { maxTokens: null, maxCostUsd: null, maxDurationMinutes: 30, maxTurns: 8 },
+      tools: [],
+      systemPrompt:
+        "Converse de forma útil, sem acessar arquivos, workspace, terminal ou ferramentas. Não execute ações externas.",
+    };
+    const reconstruct = async (): Promise<ProviderInputPart[]> => {
+      const parts: ProviderInputPart[] = [];
+      const prior = messages.at(-1)?.role === "user" ? messages.slice(0, -1) : messages;
+      for (const message of prior) {
+        const role = message.role.toUpperCase();
+        if (message.role === "user" && message.contextAssets.length > 0) {
+          const records = await this.#repository.getContextAssets(
+            message.contextAssets.map((asset) => asset.id),
+          );
+          try {
+            const restored = await this.#context.compile(
+              records,
+              `${role}: ${message.content || "Analise os itens anexados"}`,
+              { vision: capability.vision, contextWindow: capability.contextWindow },
+            );
+            parts.push(...restored.parts);
+          } catch {
+            const snapshots = records
+              .map((record) => {
+                const text = record.transcription ?? record.extractedText ?? "";
+                return `### ${record.name}\n${text || "[contexto visual indisponível nesta reconstrução]"}`;
+              })
+              .join("\n\n");
+            parts.push({
+              type: "text",
+              text: `${role}: ${message.content || "Analise os itens anexados"}\n\n<contexto_historico_recuperado>\n${snapshots}\n</contexto_historico_recuperado>`,
+            });
+          }
+        } else if (message.content)
+          parts.push({ type: "text", text: `${role}: ${message.content}` });
+      }
+      parts.push(...compiled.parts);
+      return parts;
+    };
+    let session = conversation.providerSessionId
+      ? await adapter.resumeSession(
+          { ...sessionSpec, resumeSessionId: conversation.providerSessionId },
+          sink,
+        )
+      : await adapter.createSession(sessionSpec, sink);
     this.#providers.markSessionStarted(connection.id);
     try {
-      await adapter.send(
-        session.id,
-        messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n\n"),
-      );
+      let completed: ProviderSession;
+      try {
+        completed = await adapter.send(
+          session.id,
+          conversation.providerSessionId ? compiled.parts : await reconstruct(),
+        );
+      } catch (error) {
+        if (!conversation.providerSessionId) throw error;
+        await adapter.cancel(session.id).catch(() => null);
+        content = "";
+        session = await adapter.createSession(sessionSpec, sink);
+        completed = await adapter.send(session.id, await reconstruct());
+      }
+      if (completed.nativeSessionId)
+        await this.#repository.updateConversation(conversation.id, {
+          providerSessionId: completed.nativeSessionId,
+          providerConnectionId: connection.id,
+        });
       await this.#repository.updateMessage(assistantMessage.id, {
         content,
         status: "completed",
@@ -549,6 +648,7 @@ export class OrchestrationService {
   async #analyze(run: Run, root: WorkspaceRoot): Promise<AnalysisResult> {
     const settings = await this.#repository.getSettings();
     const summaries = this.#providers.listCached();
+    const requiresVision = await this.#runRequiresVision(run);
     const suggested =
       run.spec.roleModels.maestro ??
       settings.defaultModels.maestro ??
@@ -559,7 +659,7 @@ export class OrchestrationService {
       const route = routeModel({
         role: "analyst",
         providers: summaries,
-        requirements: { chat: true, structuredOutput: true },
+        requirements: { chat: true, structuredOutput: true, vision: requiresVision },
         suggested,
         preferredProviderIds: ["anthropic", "openai-compatible", "codex", "claude-code"],
       });
@@ -618,6 +718,7 @@ export class OrchestrationService {
     knownAnalysis?: AnalysisResult,
   ): Promise<PlanSpec> {
     const root = await this.#repository.getWorkspaceRoot(run.spec.workspaceRootIds[0]!);
+    const requiresVision = await this.#runRequiresVision(run);
     const analysis = knownAnalysis ?? {
       objective: run.spec.prompt,
       risks: [],
@@ -637,7 +738,7 @@ export class OrchestrationService {
       const route = routeModel({
         role: "planner",
         providers: summaries,
-        requirements: { chat: true, structuredOutput: true },
+        requirements: { chat: true, structuredOutput: true, vision: requiresVision },
         fixed: version === 1 ? run.spec.requestedModel : null,
         suggested,
         preferredProviderIds: ["anthropic", "codex", "claude-code", "openai-compatible"],
@@ -706,6 +807,7 @@ export class OrchestrationService {
     summaries: ReturnType<ProviderRegistry["listCached"]>,
   ): Promise<PlanSpec> {
     const git = await this.#git.inspect(root.canonicalPath);
+    const requiresVision = await this.#runRequiresVision(run);
     const keyToId = new Map<string, string>();
     generated.tasks.forEach((task, index) => keyToId.set(task.key, safeTaskId(task.key, index)));
     const tasks: TaskSpec[] = generated.tasks.map((task) => {
@@ -726,11 +828,16 @@ export class OrchestrationService {
         selection = routeModel({
           role: task.role,
           providers: summaries.filter((summary) => summary.descriptor.kind === "cli"),
-          requirements: { coding: true, tools: task.role !== "reviewer" },
+          requirements: {
+            coding: true,
+            tools: task.role !== "reviewer",
+            vision: requiresVision,
+          },
           suggested,
           preferredProviderIds: ["codex", "claude-code"],
         }).selection;
-      } catch {
+      } catch (error) {
+        if (requiresVision) throw error;
         selection = suggested ?? { providerId: "codex", modelId: "default", effort: "medium" };
       }
       selection = this.#providers.prepareSubscription(selection);
@@ -857,10 +964,32 @@ export class OrchestrationService {
     const resolved = this.#providers.resolve(selection, "orchestrator");
     const { adapter, connection } = resolved;
     selection = resolved.selection;
+    let effectiveMessages = messages;
+    if (run.spec.contextAssetIds.length > 0) {
+      let lastUserIndex = -1;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.role === "user") {
+          lastUserIndex = index;
+          break;
+        }
+      }
+      if (lastUserIndex >= 0) {
+        const records = await this.#repository.getContextAssets(run.spec.contextAssetIds);
+        const capability = this.#modelCapability(selection);
+        const compiled = await this.#context.compile(
+          records,
+          inputText(messages[lastUserIndex]!.content),
+          { vision: capability.vision, contextWindow: capability.contextWindow },
+        );
+        effectiveMessages = messages.map((message, index) =>
+          index === lastUserIndex ? { ...message, content: compiled.parts } : message,
+        );
+      }
+    }
     if (adapter.chat) {
       const result = await adapter.chat({
         selection,
-        messages,
+        messages: effectiveMessages,
         ...(selection.effort ? { effort: selection.effort } : {}),
         maxTokens: 12_000,
         outputSchema,
@@ -893,9 +1022,9 @@ export class OrchestrationService {
       },
       budget: { maxTokens: 20_000, maxCostUsd: null, maxDurationMinutes: 20, maxTurns: 4 },
       tools: [],
-      systemPrompt: messages
+      systemPrompt: effectiveMessages
         .filter((message) => message.role === "system")
-        .map((message) => message.content)
+        .map((message) => inputText(message.content))
         .join("\n\n"),
       outputSchema,
     };
@@ -905,10 +1034,11 @@ export class OrchestrationService {
     try {
       await adapter.send(
         session.id,
-        messages
-          .filter((message) => message.role !== "system")
-          .map((message) => message.content)
-          .join("\n\n"),
+        mergeInputs(
+          effectiveMessages
+            .filter((message) => message.role !== "system")
+            .map((message) => message.content),
+        ),
       );
     } finally {
       this.#untrackSession(run.id, selection.providerId, session.id, connection?.id);
@@ -934,6 +1064,11 @@ export class OrchestrationService {
     const resolved = this.#providers.resolve(selection, "direct");
     const { adapter, connection } = resolved;
     const resolvedSelection = resolved.selection;
+    const contextAssets = await this.#repository.getContextAssets(run.spec.contextAssetIds);
+    const compiled = await this.#context.compile(contextAssets, run.spec.prompt, {
+      vision: this.#modelCapability(resolvedSelection).vision,
+      contextWindow: this.#modelCapability(resolvedSelection).contextWindow,
+    });
     let content = "";
     const sink = this.#messageSink(run.id, assistantMessageId, (value) => {
       content = value;
@@ -960,7 +1095,7 @@ export class OrchestrationService {
     this.#trackSession(run.id, resolvedSelection.providerId, session.id, connection!.id);
     this.#providers.markSessionStarted(connection!.id);
     try {
-      const completed = await adapter.send(session.id, run.spec.prompt);
+      const completed = await adapter.send(session.id, compiled.parts);
       if (completed.nativeSessionId) {
         await this.#repository.updateConversation(run.conversationId, {
           providerSessionId: completed.nativeSessionId,
@@ -1145,18 +1280,22 @@ export class OrchestrationService {
       await this.#repository.updateTaskRun(run.id, task.id, {
         providerSessionId: session.nativeSessionId,
       });
-      const completed = await adapter.send(
-        session.id,
-        [
-          `Tarefa: ${task.title}`,
-          task.description,
-          "Critérios de sucesso:",
-          ...task.successCriteria.map((criterion) => `- ${criterion}`),
-          task.role === "reviewer"
-            ? "Revise e reporte achados; não altere arquivos."
-            : "Implemente somente o necessário e mantenha o workspace consistente.",
-        ].join("\n"),
-      );
+      const taskPrompt = [
+        `Tarefa: ${task.title}`,
+        task.description,
+        "Critérios de sucesso:",
+        ...task.successCriteria.map((criterion) => `- ${criterion}`),
+        task.role === "reviewer"
+          ? "Revise e reporte achados; não altere arquivos."
+          : "Implemente somente o necessário e mantenha o workspace consistente.",
+      ].join("\n");
+      const contextAssets = await this.#repository.getContextAssets(run.spec.contextAssetIds);
+      const capability = this.#modelCapability(resolved.selection);
+      const compiled = await this.#context.compile(contextAssets, taskPrompt, {
+        vision: capability.vision,
+        contextWindow: capability.contextWindow,
+      });
+      const completed = await adapter.send(session.id, compiled.parts);
       await this.#repository.updateTaskRun(run.id, task.id, {
         providerSessionId: completed.nativeSessionId,
       });
@@ -1307,23 +1446,6 @@ export class OrchestrationService {
     }
   }
 
-  async #attachments(paths: string[]): Promise<Attachment[]> {
-    return Promise.all(
-      paths.map(async (localPath) => {
-        const metadata = await stat(localPath);
-        if (!metadata.isFile())
-          throw new MaestroError("INVALID_ATTACHMENT", `Anexo inválido: ${localPath}`);
-        return {
-          id: ulid(),
-          name: path.basename(localPath),
-          mimeType: mimeType(localPath),
-          size: metadata.size,
-          localPath,
-        };
-      }),
-    );
-  }
-
   async #append<K extends NewRunEvent["type"]>(
     event: Extract<NewRunEvent, { type: K }>,
   ): Promise<RunEvent<K>> {
@@ -1421,6 +1543,43 @@ export class OrchestrationService {
       if (model) return { providerId: summary.descriptor.id, modelId: model.id, effort: "medium" };
     }
     return null;
+  }
+
+  async #runRequiresVision(run: Run): Promise<boolean> {
+    if (run.spec.contextAssetIds.length === 0) return false;
+    const records = await this.#repository.getContextAssets(run.spec.contextAssetIds);
+    return records.some((record) => record.kind === "image" || record.metadata.scannedPdf === true);
+  }
+
+  #modelCapability(selection: ModelSelection): ModelCapability {
+    const connectionModel = selection.connectionId
+      ? this.#providers
+          .listConnectionsCached()
+          .find((item) => item.connection.id === selection.connectionId)
+          ?.models.find(
+            (model) => model.id === selection.modelId || selection.modelId === "default",
+          )
+      : null;
+    const provider = this.#providers
+      .listCached()
+      .find((item) => item.descriptor.id === selection.providerId);
+    const model =
+      connectionModel ??
+      provider?.models.find((item) => item.id === selection.modelId) ??
+      (selection.modelId === "default"
+        ? (provider?.models.find((item) => item.isDefault) ?? provider?.models[0])
+        : undefined);
+    return (
+      model?.capabilities ?? {
+        chat: true,
+        coding: true,
+        tools: false,
+        vision: false,
+        reasoningEffort: [],
+        structuredOutput: false,
+        contextWindow: null,
+      }
+    );
   }
 
   #emitEphemeralMessage(messageId: string, delta: string): void {

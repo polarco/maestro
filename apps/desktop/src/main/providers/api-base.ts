@@ -8,6 +8,7 @@ import type {
   ProviderEventSink,
   ProviderHealth,
   ProviderModel,
+  ProviderInput,
   ProviderSession,
   ProviderSessionSpec,
 } from "@maestro/contracts";
@@ -46,7 +47,7 @@ export abstract class ApiProviderAdapter implements ProviderAdapter {
     return this.createSession(spec, onEvent);
   }
 
-  send(_sessionId: string, _prompt: string): Promise<ProviderSession> {
+  send(_sessionId: string, _prompt: ProviderInput): Promise<ProviderSession> {
     return Promise.reject(
       new MaestroError(
         "STRUCTURED_SESSION_UNSUPPORTED",
@@ -55,7 +56,7 @@ export abstract class ApiProviderAdapter implements ProviderAdapter {
     );
   }
 
-  steer(_sessionId: string, _prompt: string): Promise<void> {
+  steer(_sessionId: string, _prompt: ProviderInput): Promise<void> {
     return Promise.reject(
       new MaestroError(
         "STEERING_UNSUPPORTED",

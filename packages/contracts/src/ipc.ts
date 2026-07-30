@@ -1,5 +1,7 @@
 import type {
   AppSettings,
+  ContextAssetSummary,
+  ContextItemInput,
   Conversation,
   Effort,
   Message,
@@ -99,7 +101,67 @@ export interface SendMessageInput {
   modelId: string;
   effort: Effort;
   workspaceRootId: string;
-  attachmentPaths: string[];
+  contextItems: ContextItemInput[];
+}
+
+export interface SearchWorkspaceContextInput {
+  projectId: string;
+  query: string;
+  limit?: number;
+}
+
+export interface WorkspaceContextCandidate {
+  id: string;
+  projectId: string;
+  workspaceRootId: string;
+  rootName: string;
+  relativePath: string;
+  name: string;
+  kind: "file" | "directory";
+  mimeType: string | null;
+  size: number | null;
+}
+
+export interface PrepareWorkspaceContextInput {
+  conversationId: string;
+  candidates: Array<{
+    workspaceRootId: string;
+    relativePath: string;
+    kind: "file" | "directory";
+  }>;
+}
+
+export interface StageRecordedAudioInput {
+  conversationId: string;
+  data: Uint8Array;
+  mimeType: string;
+  durationMs?: number;
+}
+
+export interface ContextProcessingEvent {
+  conversationId: string;
+  asset: ContextAssetSummary;
+  stage:
+    | "staging"
+    | "hashing"
+    | "extracting"
+    | "transcoding"
+    | "transcribing"
+    | "indexing"
+    | "ready"
+    | "error";
+  progress: number | null;
+  message: string;
+}
+
+export interface LocalModelPackageState {
+  id: "whisper-small-multilingual-q4";
+  version: string;
+  status: "not_downloaded" | "downloading" | "ready" | "error";
+  progress: number | null;
+  sizeBytes: number;
+  licenses: string[];
+  message: string;
 }
 
 export interface SendMessageResult {
@@ -152,7 +214,19 @@ export interface TerminalEvent {
 export interface MaestroDesktopApi {
   bootstrap(): Promise<BootstrapPayload>;
   selectDirectory(): Promise<string | null>;
-  selectAttachments(): Promise<string[]>;
+  selectContextFiles(conversationId: string): Promise<ContextAssetSummary[]>;
+  selectContextFolder(conversationId: string): Promise<ContextAssetSummary[]>;
+  stageDroppedFiles(conversationId: string, files: File[]): Promise<ContextAssetSummary[]>;
+  stageClipboard(conversationId: string): Promise<ContextAssetSummary[]>;
+  stageRecordedAudio(input: StageRecordedAudioInput): Promise<ContextAssetSummary>;
+  searchWorkspaceContext(input: SearchWorkspaceContextInput): Promise<WorkspaceContextCandidate[]>;
+  prepareWorkspaceContext(input: PrepareWorkspaceContextInput): Promise<ContextAssetSummary[]>;
+  listContextAssets(conversationId: string): Promise<ContextAssetSummary[]>;
+  removeContextAsset(conversationId: string, assetId: string): Promise<void>;
+  getLocalModelState(): Promise<LocalModelPackageState>;
+  downloadLocalModel(): Promise<LocalModelPackageState>;
+  cancelLocalModelDownload(): Promise<LocalModelPackageState>;
+  removeLocalModel(): Promise<LocalModelPackageState>;
   createProject(input: CreateProjectInput): Promise<Project>;
   listProjects(): Promise<Project[]>;
   selectProject(projectId: string): Promise<BootstrapPayload>;
@@ -195,6 +269,8 @@ export interface MaestroDesktopApi {
   onRunEvent(listener: (event: RunEvent) => void): () => void;
   onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
+  onContextProcessing(listener: (event: ContextProcessingEvent) => void): () => void;
+  onLocalModelState(listener: (state: LocalModelPackageState) => void): () => void;
   minimizeWindow(): Promise<void>;
   maximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;

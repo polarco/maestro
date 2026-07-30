@@ -16,7 +16,10 @@ export default defineConfig({
     build: {
       sourcemap: true,
       rollupOptions: {
-        input: path.join(directory, "src/main/index.ts"),
+        input: {
+          index: path.join(directory, "src/main/index.ts"),
+          "context-worker": path.join(directory, "src/main/context-worker.ts"),
+        },
       },
     },
   },

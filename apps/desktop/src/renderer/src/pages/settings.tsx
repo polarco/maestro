@@ -9,6 +9,7 @@ import {
   CircleUserRound,
   Cpu,
   Download,
+  FileAudio,
   FolderOpen,
   FolderPlus,
   Gauge,
@@ -36,6 +37,7 @@ import type {
   AppSettings,
   BootstrapPayload,
   ModelSelection,
+  LocalModelPackageState,
   Project,
   ProviderConfigField,
   ProviderConnectionSummary,
@@ -52,7 +54,7 @@ import { ProviderLoginTerminal } from "@renderer/components/provider-login-termi
 import { applyTheme } from "@renderer/lib/theme";
 import { InfoTooltip, TooltipProvider } from "@renderer/components/ui/tooltip";
 
-type SettingsTab = "connections" | "general" | "project" | "diagnostics";
+type SettingsTab = "connections" | "general" | "media" | "project" | "diagnostics";
 
 const healthLabels: Record<ProviderSummary["health"]["status"], string> = {
   ready: "Pronto",
@@ -94,6 +96,12 @@ export function SettingsPage({
       label: "Geral",
       description: "Aparência e comportamento",
       icon: SlidersHorizontal,
+    },
+    {
+      value: "media",
+      label: "Mídia local",
+      description: "Transcrição offline",
+      icon: FileAudio,
     },
     {
       value: "project",
@@ -290,6 +298,8 @@ export function SettingsPage({
               </>
             ) : tab === "general" ? (
               <GeneralSettings bootstrap={bootstrap} onBootstrap={onBootstrap} />
+            ) : tab === "media" ? (
+              <LocalMediaSettings />
             ) : tab === "project" ? (
               <ProjectSettings project={project} onBootstrap={onBootstrap} />
             ) : (
@@ -1794,6 +1804,192 @@ function GeneralSettings({
           </p>
         ) : null}
       </div>
+    </>
+  );
+}
+
+function formatStorageSize(value: number): string {
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KiB`;
+  if (value < 1_073_741_824) return `${(value / 1_048_576).toFixed(1)} MiB`;
+  return `${(value / 1_073_741_824).toFixed(2)} GiB`;
+}
+
+function LocalMediaSettings() {
+  const [state, setState] = useState<LocalModelPackageState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    void api()
+      .getLocalModelState()
+      .then((value) => {
+        if (active) setState(value);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    const dispose = api().onLocalModelState((value) => {
+      if (active) setState(value);
+    });
+    return () => {
+      active = false;
+      dispose();
+    };
+  }, []);
+
+  const action = useMutation({
+    mutationFn: async (kind: "download" | "cancel" | "remove" | "redownload") => {
+      setError(null);
+      if (kind === "cancel") return api().cancelLocalModelDownload();
+      if (kind === "remove") return api().removeLocalModel();
+      if (kind === "redownload") {
+        await api().removeLocalModel();
+        return api().downloadLocalModel();
+      }
+      return api().downloadLocalModel();
+    },
+    onSuccess: setState,
+    onError: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+  });
+
+  const tone =
+    state?.status === "ready"
+      ? "success"
+      : state?.status === "error"
+        ? "danger"
+        : state?.status === "downloading"
+          ? "info"
+          : "neutral";
+  const label =
+    state?.status === "ready"
+      ? "Disponível offline"
+      : state?.status === "error"
+        ? "Falha no pacote"
+        : state?.status === "downloading"
+          ? "Baixando"
+          : "Não instalado";
+
+  return (
+    <>
+      <SettingsHeader
+        icon={FileAudio}
+        eyebrow="Processamento no dispositivo"
+        title="Mídia local"
+        description="Gerencie o pacote usado para converter e transcrever áudio e vídeo sem enviar a mídia a serviços de transcrição."
+      />
+      <section className="settings-card mt-6 overflow-hidden">
+        <div className="flex flex-wrap items-start gap-4 border-b border-border/80 p-5 md:p-6">
+          <span className="grid size-11 shrink-0 place-items-center rounded-[14px] border border-info/20 bg-info/[0.07] text-info">
+            <FileAudio size={19} />
+          </span>
+          <div className="min-w-[220px] flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-[13.5px] font-semibold">Whisper Small multilíngue</h3>
+              <Badge tone={tone}>{label}</Badge>
+            </div>
+            <p className="mt-1.5 max-w-2xl text-[10px] leading-4 text-text-muted">
+              Modelo quantizado, runtime de inferência e conversão de mídia. O primeiro download
+              requer rede; depois o pacote fica em cache privado e funciona offline.
+            </p>
+          </div>
+          <span className="font-mono text-[9px] text-text-faint">
+            {state ? formatStorageSize(state.sizeBytes) : "calculando…"}
+          </span>
+        </div>
+        <div className="p-5 md:p-6">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-[13px] border border-border/80 bg-bg-elevated/45 p-3.5">
+              <span className="text-[8px] font-bold uppercase tracking-[0.12em] text-text-faint">
+                Versão
+              </span>
+              <p className="mt-2 break-all font-mono text-[10px] text-text-muted">
+                {state?.version ?? "—"}
+              </p>
+            </div>
+            <div className="rounded-[13px] border border-border/80 bg-bg-elevated/45 p-3.5">
+              <span className="text-[8px] font-bold uppercase tracking-[0.12em] text-text-faint">
+                Espaço ocupado
+              </span>
+              <p className="mt-2 text-[12px] font-semibold text-text">
+                {state ? formatStorageSize(state.sizeBytes) : "—"}
+              </p>
+            </div>
+            <div className="rounded-[13px] border border-border/80 bg-bg-elevated/45 p-3.5">
+              <span className="text-[8px] font-bold uppercase tracking-[0.12em] text-text-faint">
+                Licenças
+              </span>
+              <p className="mt-2 text-[10px] leading-4 text-text-muted">
+                {state?.licenses.join(" · ") ?? "—"}
+              </p>
+            </div>
+          </div>
+
+          {state?.status === "downloading" ? (
+            <div className="mt-4 rounded-[13px] border border-info/20 bg-info/[0.035] p-3.5">
+              <div className="flex items-center justify-between gap-3 text-[10px] text-info">
+                <span>{state.message}</span>
+                <span className="font-mono">
+                  {state.progress === null ? "…" : `${Math.round(state.progress * 100)}%`}
+                </span>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+                <span
+                  className="block h-full rounded-full bg-info transition-[width]"
+                  style={{ width: `${Math.round((state.progress ?? 0.03) * 100)}%` }}
+                />
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 rounded-[13px] border border-border/80 bg-bg-elevated/40 px-3.5 py-3 text-[10px] leading-4 text-text-muted">
+              {state?.message ?? "Consultando o armazenamento local…"}
+            </p>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {state?.status === "downloading" ? (
+              <Button
+                variant="secondary"
+                disabled={action.isPending}
+                onClick={() => action.mutate("cancel")}
+              >
+                Cancelar download
+              </Button>
+            ) : state?.status === "ready" ? (
+              <>
+                <Button
+                  variant="secondary"
+                  disabled={action.isPending}
+                  onClick={() => action.mutate("redownload")}
+                >
+                  <RefreshCcw size={12} /> Baixar novamente
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={action.isPending}
+                  onClick={() => action.mutate("remove")}
+                >
+                  <Trash2 size={12} /> Remover pacote
+                </Button>
+              </>
+            ) : (
+              <Button
+                disabled={action.isPending || !state}
+                onClick={() => action.mutate("download")}
+              >
+                <Download size={12} /> Baixar pacote local
+              </Button>
+            )}
+          </div>
+          <p className="mt-3 text-[9px] leading-4 text-text-faint">
+            O download só começa ao clicar no botão. Diagnósticos registram estado e tamanho, nunca
+            conteúdo, transcrição ou quadros da mídia.
+          </p>
+          {error ? (
+            <p className="mt-3 rounded-[11px] border border-danger/20 bg-danger/[0.04] px-3 py-2 text-[10px] text-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      </section>
     </>
   );
 }

@@ -13,6 +13,12 @@ import { configString } from "./types.js";
 
 type UnknownRecord = Record<string, unknown>;
 
+function textContent(content: ProviderChatRequest["messages"][number]["content"]): string {
+  return typeof content === "string"
+    ? content
+    : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n\n");
+}
+
 export class OpenAiCompatibleAdapter extends ApiProviderAdapter {
   readonly descriptor: ProviderDescriptor = {
     id: "openai-compatible",
@@ -111,7 +117,10 @@ export class OpenAiCompatibleAdapter extends ApiProviderAdapter {
       );
     const body: UnknownRecord = {
       model: request.selection.modelId,
-      messages: request.messages,
+      messages: request.messages.map((message) => ({
+        ...message,
+        content: textContent(message.content),
+      })),
       stream: Boolean(onDelta),
     };
     if (request.maxTokens) body.max_tokens = request.maxTokens;

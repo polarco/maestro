@@ -1,11 +1,43 @@
-import { contextBridge, ipcRenderer } from "electron";
-import type { MaestroDesktopApi, RunEvent, TerminalEvent, UpdateState } from "@maestro/contracts";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type {
+  ContextProcessingEvent,
+  LocalModelPackageState,
+  MaestroDesktopApi,
+  RunEvent,
+  TerminalEvent,
+  UpdateState,
+} from "@maestro/contracts";
 import { IPC_CHANNELS } from "@maestro/contracts/ipc-channels";
 
 const api: MaestroDesktopApi = {
   bootstrap: () => ipcRenderer.invoke(IPC_CHANNELS.bootstrap),
   selectDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.selectDirectory),
-  selectAttachments: () => ipcRenderer.invoke(IPC_CHANNELS.selectAttachments),
+  selectContextFiles: (conversationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextSelectFiles, conversationId),
+  selectContextFolder: (conversationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextSelectFolder, conversationId),
+  stageDroppedFiles: (conversationId, files) => {
+    const paths = files.map((file) => webUtils.getPathForFile(file)).filter(Boolean);
+    if (paths.length !== files.length)
+      return Promise.reject(
+        new Error("O drop contém um item sem caminho local validado pelo Electron."),
+      );
+    return ipcRenderer.invoke(IPC_CHANNELS.contextStageDrop, conversationId, paths);
+  },
+  stageClipboard: (conversationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextStageClipboard, conversationId),
+  stageRecordedAudio: (input) => ipcRenderer.invoke(IPC_CHANNELS.contextStageRecording, input),
+  searchWorkspaceContext: (input) => ipcRenderer.invoke(IPC_CHANNELS.contextSearchWorkspace, input),
+  prepareWorkspaceContext: (input) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextPrepareWorkspace, input),
+  listContextAssets: (conversationId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextList, conversationId),
+  removeContextAsset: (conversationId, assetId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.contextRemove, conversationId, assetId),
+  getLocalModelState: () => ipcRenderer.invoke(IPC_CHANNELS.localModelState),
+  downloadLocalModel: () => ipcRenderer.invoke(IPC_CHANNELS.localModelDownload),
+  cancelLocalModelDownload: () => ipcRenderer.invoke(IPC_CHANNELS.localModelCancel),
+  removeLocalModel: () => ipcRenderer.invoke(IPC_CHANNELS.localModelRemove),
   createProject: (input) => ipcRenderer.invoke(IPC_CHANNELS.projectCreate, input),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.projectList),
   selectProject: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectSelect, projectId),
@@ -71,6 +103,18 @@ const api: MaestroDesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, value: UpdateState) => listener(value);
     ipcRenderer.on(IPC_CHANNELS.eventUpdate, handler);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventUpdate, handler);
+  },
+  onContextProcessing: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: ContextProcessingEvent) =>
+      listener(value);
+    ipcRenderer.on(IPC_CHANNELS.eventContext, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventContext, handler);
+  },
+  onLocalModelState: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: LocalModelPackageState) =>
+      listener(value);
+    ipcRenderer.on(IPC_CHANNELS.eventLocalModel, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventLocalModel, handler);
   },
   minimizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowMinimize),
   maximizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowMaximize),

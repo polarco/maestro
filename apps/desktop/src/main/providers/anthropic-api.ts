@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type {
   ProviderChatRequest,
   ProviderChatResult,
@@ -12,6 +13,32 @@ import { consumeSse, responseError } from "./sse.js";
 import { configString } from "./types.js";
 
 type UnknownRecord = Record<string, unknown>;
+
+function providerText(content: ProviderChatRequest["messages"][number]["content"]): string {
+  return typeof content === "string"
+    ? content
+    : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n\n");
+}
+
+export async function anthropicContent(
+  content: ProviderChatRequest["messages"][number]["content"],
+): Promise<string | UnknownRecord[]> {
+  if (typeof content === "string") return content;
+  return Promise.all(
+    content.map(async (part): Promise<UnknownRecord> =>
+      part.type === "text"
+        ? { type: "text", text: part.text }
+        : {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: part.mimeType ?? "image/jpeg",
+              data: (await readFile(part.path)).toString("base64"),
+            },
+          },
+    ),
+  );
+}
 
 export class AnthropicApiAdapter extends ApiProviderAdapter {
   readonly descriptor: ProviderDescriptor = {
@@ -118,10 +145,15 @@ export class AnthropicApiAdapter extends ApiProviderAdapter {
     );
     const systemMessages = request.messages
       .filter((message) => message.role === "system")
-      .map((message) => message.content);
-    const messages = request.messages
-      .filter((message) => message.role !== "system")
-      .map((message) => ({ role: message.role, content: message.content }));
+      .map((message) => providerText(message.content));
+    const messages = await Promise.all(
+      request.messages
+        .filter((message) => message.role !== "system")
+        .map(async (message) => ({
+          role: message.role,
+          content: await anthropicContent(message.content),
+        })),
+    );
     if (request.outputSchema) {
       systemMessages.push(
         `Responda somente com JSON válido que siga este JSON Schema, sem markdown: ${JSON.stringify(request.outputSchema)}`,

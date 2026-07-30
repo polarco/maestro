@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdirSync } from "node:fs";
 import BetterSqlite3 from "better-sqlite3";
-import { and, asc, desc, eq, exists, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, isNotNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { ulid } from "ulid";
 import {
@@ -11,6 +11,7 @@ import {
   runSpecSchema,
   type AppSettings,
   type Attachment,
+  type ContextAssetSummary,
   type Conversation,
   type EventPage,
   type Message,
@@ -32,11 +33,17 @@ import {
   type WorkspaceRoot,
 } from "@maestro/contracts";
 import { assertRunTransition, MaestroError } from "@maestro/core";
-import { INITIAL_MIGRATION, MULTI_ACCOUNT_MIGRATION } from "./migration.js";
+import {
+  INITIAL_MIGRATION,
+  MULTI_ACCOUNT_MIGRATION,
+  MULTIMODAL_CONTEXT_MIGRATION,
+} from "./migration.js";
 import {
   appMetadata,
   conversations,
+  contextAssets,
   messages,
+  messageContextAssets,
   plans,
   projects,
   providerConfigs,
@@ -78,6 +85,55 @@ interface ConversationInput {
   workspaceRootId: string;
 }
 
+export type ContextAssetRecord = typeof contextAssets.$inferSelect;
+
+export interface ContextChunkRecord {
+  id: string;
+  assetId: string;
+  ordinal: number;
+  content: string;
+  tokenCount: number;
+  rank?: number;
+}
+
+function contextAssetSummary(record: ContextAssetRecord): ContextAssetSummary {
+  const canPreview =
+    record.status !== "missing" &&
+    record.kind !== "folder" &&
+    Boolean(record.managedPath ?? record.sourcePath);
+  return {
+    id: record.id,
+    projectId: record.projectId,
+    conversationId: record.conversationId,
+    source: record.source,
+    kind: record.kind,
+    status: record.status,
+    changeState: record.changeState,
+    name: record.name,
+    mimeType: record.mimeType,
+    size: record.size,
+    workspaceRootId: record.workspaceRootId,
+    relativePath: record.relativePath,
+    contentHash: record.contentHash,
+    sourceModifiedAt: record.sourceModifiedAt,
+    durationMs: record.durationMs,
+    pageCount: record.pageCount,
+    previewUrl: canPreview
+      ? `maestro-attachment://asset/${record.conversationId}/${record.id}`
+      : null,
+    thumbnailUrl: record.thumbnailPath
+      ? `maestro-attachment://asset/${record.conversationId}/${record.id}?thumbnail=1`
+      : null,
+    requiresVision: record.kind === "image" || record.metadata.scannedPdf === true,
+    extractedTextAvailable: Boolean(record.extractedText),
+    transcription: record.transcription,
+    warning: record.warning,
+    error: record.error,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
 export class MaestroRepository {
   readonly sqlite: BetterSqlite3.Database;
   readonly db: ReturnType<typeof drizzle<typeof schema>>;
@@ -102,6 +158,17 @@ export class MaestroRepository {
         this.sqlite
           .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
           .run(2, now());
+      })();
+    }
+    const migration3 = this.sqlite
+      .prepare("SELECT version FROM schema_migrations WHERE version = 3")
+      .get();
+    if (!migration3) {
+      this.sqlite.transaction(() => {
+        this.sqlite.exec(MULTIMODAL_CONTEXT_MIGRATION);
+        this.sqlite
+          .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(3, now());
       })();
     }
     this.db = drizzle(this.sqlite, { schema });
@@ -453,6 +520,206 @@ export class MaestroRepository {
       .limit(Math.max(1, Math.min(limit, 500)));
   }
 
+  async createContextAsset(
+    input: Omit<ContextAssetRecord, "id" | "createdAt" | "updatedAt"> & { id?: string },
+  ): Promise<ContextAssetRecord> {
+    const timestamp = now();
+    const row: ContextAssetRecord = {
+      ...input,
+      id: input.id ?? ulid(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await this.db.insert(contextAssets).values(row);
+    return row;
+  }
+
+  async updateContextAsset(
+    assetId: string,
+    values: Partial<
+      Omit<ContextAssetRecord, "id" | "projectId" | "conversationId" | "createdAt" | "updatedAt">
+    >,
+  ): Promise<ContextAssetRecord> {
+    await this.db
+      .update(contextAssets)
+      .set({ ...values, updatedAt: now() })
+      .where(eq(contextAssets.id, assetId));
+    return this.getContextAsset(assetId);
+  }
+
+  async getContextAsset(assetId: string): Promise<ContextAssetRecord> {
+    const [record] = await this.db
+      .select()
+      .from(contextAssets)
+      .where(eq(contextAssets.id, assetId))
+      .limit(1);
+    if (!record)
+      throw new MaestroError("CONTEXT_ASSET_NOT_FOUND", "Item de contexto não encontrado.");
+    return record;
+  }
+
+  async getContextAssets(assetIds: readonly string[]): Promise<ContextAssetRecord[]> {
+    if (assetIds.length === 0) return [];
+    const records = await this.db
+      .select()
+      .from(contextAssets)
+      .where(inArray(contextAssets.id, [...assetIds]));
+    const byId = new Map(records.map((record) => [record.id, record]));
+    return assetIds.flatMap((id) => {
+      const record = byId.get(id);
+      return record ? [record] : [];
+    });
+  }
+
+  async findContextAssetByHash(
+    conversationId: string,
+    contentHash: string,
+  ): Promise<ContextAssetRecord | null> {
+    const [record] = await this.db
+      .select()
+      .from(contextAssets)
+      .where(
+        and(
+          eq(contextAssets.conversationId, conversationId),
+          eq(contextAssets.contentHash, contentHash),
+          isNotNull(contextAssets.managedPath),
+        ),
+      )
+      .limit(1);
+    return record ?? null;
+  }
+
+  async listContextAssetRecords(conversationId: string): Promise<ContextAssetRecord[]> {
+    return this.db
+      .select()
+      .from(contextAssets)
+      .where(eq(contextAssets.conversationId, conversationId))
+      .orderBy(asc(contextAssets.createdAt));
+  }
+
+  async listProjectContextAssetRecords(projectId: string): Promise<ContextAssetRecord[]> {
+    return this.db
+      .select()
+      .from(contextAssets)
+      .where(eq(contextAssets.projectId, projectId))
+      .orderBy(asc(contextAssets.createdAt));
+  }
+
+  async listContextAssets(conversationId: string): Promise<ContextAssetSummary[]> {
+    return (await this.listContextAssetRecords(conversationId)).map(contextAssetSummary);
+  }
+
+  toContextAssetSummary(record: ContextAssetRecord): ContextAssetSummary {
+    return contextAssetSummary(record);
+  }
+
+  async deleteContextAsset(conversationId: string, assetId: string): Promise<ContextAssetRecord> {
+    const record = await this.getContextAsset(assetId);
+    if (record.conversationId !== conversationId)
+      throw new MaestroError(
+        "CONTEXT_CONVERSATION_MISMATCH",
+        "O item de contexto não pertence a esta conversa.",
+      );
+    await this.db.delete(contextAssets).where(eq(contextAssets.id, assetId));
+    return record;
+  }
+
+  async isContextAssetLinked(assetId: string): Promise<boolean> {
+    const [link] = await this.db
+      .select({ assetId: messageContextAssets.assetId })
+      .from(messageContextAssets)
+      .where(eq(messageContextAssets.assetId, assetId))
+      .limit(1);
+    return Boolean(link);
+  }
+
+  async replaceContextChunks(
+    assetId: string,
+    chunks: Array<{ content: string; tokenCount: number }>,
+  ): Promise<void> {
+    await this.getContextAsset(assetId);
+    const timestamp = now();
+    this.sqlite.transaction(() => {
+      this.sqlite.prepare("DELETE FROM context_chunks WHERE asset_id = ?").run(assetId);
+      const insert = this.sqlite.prepare(
+        "INSERT INTO context_chunks(id, asset_id, ordinal, content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      chunks.forEach((chunk, ordinal) =>
+        insert.run(ulid(), assetId, ordinal, chunk.content, chunk.tokenCount, timestamp),
+      );
+    })();
+  }
+
+  searchContextChunks(
+    assetIds: readonly string[],
+    query: string,
+    limit = 24,
+  ): Promise<ContextChunkRecord[]> {
+    if (assetIds.length === 0) return Promise.resolve([]);
+    const boundedLimit = Math.max(1, Math.min(limit, 200));
+    const placeholders = assetIds.map(() => "?").join(", ");
+    const terms = query
+      .normalize("NFKC")
+      .match(/[\p{L}\p{N}_-]{2,}/gu)
+      ?.slice(0, 16)
+      .map((term) => `"${term.replaceAll('"', '""')}"*`);
+    if (!terms?.length) {
+      return Promise.resolve(
+        this.sqlite
+          .prepare(
+            `SELECT id, asset_id AS assetId, ordinal, content, token_count AS tokenCount
+             FROM context_chunks
+             WHERE asset_id IN (${placeholders})
+             ORDER BY asset_id, ordinal
+             LIMIT ?`,
+          )
+          .all(...assetIds, boundedLimit) as ContextChunkRecord[],
+      );
+    }
+    const ranked = this.sqlite
+      .prepare(
+        `SELECT chunk.id, chunk.asset_id AS assetId, chunk.ordinal, chunk.content,
+                chunk.token_count AS tokenCount, bm25(context_chunks_fts) AS rank
+         FROM context_chunks_fts
+         JOIN context_chunks AS chunk ON chunk.id = context_chunks_fts.chunk_id
+         WHERE context_chunks_fts MATCH ?
+           AND context_chunks_fts.asset_id IN (${placeholders})
+         ORDER BY rank, chunk.ordinal
+         LIMIT ?`,
+      )
+      .all(terms.join(" OR "), ...assetIds, boundedLimit) as ContextChunkRecord[];
+    if (ranked.length > 0) return Promise.resolve(ranked);
+    return Promise.resolve(
+      this.sqlite
+        .prepare(
+          `SELECT id, asset_id AS assetId, ordinal, content, token_count AS tokenCount
+           FROM context_chunks
+           WHERE asset_id IN (${placeholders})
+           ORDER BY asset_id, ordinal
+           LIMIT ?`,
+        )
+        .all(...assetIds, boundedLimit) as ContextChunkRecord[],
+    );
+  }
+
+  async listManagedContextPaths(input: {
+    conversationId?: string;
+    projectId?: string;
+  }): Promise<string[]> {
+    const records = input.conversationId
+      ? await this.db
+          .select({ managedPath: contextAssets.managedPath })
+          .from(contextAssets)
+          .where(eq(contextAssets.conversationId, input.conversationId))
+      : input.projectId
+        ? await this.db
+            .select({ managedPath: contextAssets.managedPath })
+            .from(contextAssets)
+            .where(eq(contextAssets.projectId, input.projectId))
+        : [];
+    return records.flatMap((record) => (record.managedPath ? [record.managedPath] : []));
+  }
+
   async addMessage(input: {
     conversationId: string;
     runId?: string | null;
@@ -460,11 +727,12 @@ export class MaestroRepository {
     content: string;
     status?: MessageStatus;
     attachments?: Attachment[];
+    contextAssetIds?: string[];
     providerMessageId?: string | null;
   }): Promise<Message> {
     await this.getConversation(input.conversationId);
     const timestamp = now();
-    const row: Message = {
+    const row: typeof messages.$inferInsert = {
       id: ulid(),
       conversationId: input.conversationId,
       runId: input.runId ?? null,
@@ -476,12 +744,61 @@ export class MaestroRepository {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.db.insert(messages).values(row);
+    this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare(
+          `INSERT INTO messages(
+             id, conversation_id, run_id, role, content, status, attachments,
+             provider_message_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          row.id,
+          row.conversationId,
+          row.runId,
+          row.role,
+          row.content,
+          row.status,
+          JSON.stringify(row.attachments),
+          row.providerMessageId,
+          row.createdAt,
+          row.updatedAt,
+        );
+      const assetIds = [...new Set(input.contextAssetIds ?? [])];
+      const insertLink = this.sqlite.prepare(
+        "INSERT INTO message_context_assets(message_id, asset_id, ordinal) VALUES (?, ?, ?)",
+      );
+      assetIds.forEach((assetId, ordinal) => {
+        const asset = this.sqlite
+          .prepare("SELECT conversation_id AS conversationId FROM context_assets WHERE id = ?")
+          .get(assetId) as { conversationId: string } | undefined;
+        if (!asset)
+          throw new MaestroError("CONTEXT_ASSET_NOT_FOUND", "Item de contexto não encontrado.");
+        if (asset.conversationId !== input.conversationId)
+          throw new MaestroError(
+            "CONTEXT_CONVERSATION_MISMATCH",
+            "O item de contexto não pertence a esta conversa.",
+          );
+        insertLink.run(row.id, assetId, ordinal);
+      });
+    })();
     await this.db
       .update(conversations)
       .set({ updatedAt: timestamp })
       .where(eq(conversations.id, input.conversationId));
-    return row;
+    return {
+      id: row.id,
+      conversationId: row.conversationId,
+      runId: row.runId ?? null,
+      role: row.role,
+      content: row.content,
+      status: row.status ?? "completed",
+      attachments: row.attachments ?? [],
+      contextAssets: await this.contextAssetsForMessage(row.id),
+      providerMessageId: row.providerMessageId ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
   }
 
   async updateMessage(
@@ -494,15 +811,48 @@ export class MaestroRepository {
       .where(eq(messages.id, messageId));
     const [row] = await this.db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
     if (!row) throw new MaestroError("MESSAGE_NOT_FOUND", "Mensagem não encontrada.");
-    return row;
+    return { ...row, contextAssets: await this.contextAssetsForMessage(row.id) };
   }
 
   async listMessages(conversationId: string): Promise<Message[]> {
-    return this.db
+    const rows = await this.db
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
       .orderBy(asc(messages.createdAt));
+    if (rows.length === 0) return [];
+    const links = await this.db
+      .select()
+      .from(messageContextAssets)
+      .where(
+        inArray(
+          messageContextAssets.messageId,
+          rows.map((row) => row.id),
+        ),
+      )
+      .orderBy(asc(messageContextAssets.ordinal));
+    const assets = await this.getContextAssets([...new Set(links.map((link) => link.assetId))]);
+    const byId = new Map(assets.map((asset) => [asset.id, contextAssetSummary(asset)]));
+    return rows.map((row) => ({
+      ...row,
+      contextAssets: links
+        .filter((link) => link.messageId === row.id)
+        .flatMap((link) => {
+          const asset = byId.get(link.assetId);
+          return asset ? [asset] : [];
+        }),
+    }));
+  }
+
+  private async contextAssetsForMessage(messageId: string): Promise<ContextAssetSummary[]> {
+    const links = await this.db
+      .select()
+      .from(messageContextAssets)
+      .where(eq(messageContextAssets.messageId, messageId))
+      .orderBy(asc(messageContextAssets.ordinal));
+    return (await this.getContextAssets(links.map((link) => link.assetId))).map(
+      contextAssetSummary,
+    );
   }
 
   async createRun(spec: RunSpec, initialState: RunState): Promise<Run> {

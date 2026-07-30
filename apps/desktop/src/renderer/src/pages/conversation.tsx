@@ -1,16 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   Bot,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
+  Clipboard,
   Code2,
+  FileUp,
+  FileVideo,
   Folder,
+  FolderOpen,
   LockKeyhole,
+  LoaderCircle,
   MessageCircle,
+  Mic,
   Paperclip,
   Send,
   Settings2,
@@ -21,22 +28,32 @@ import {
 } from "lucide-react";
 import type {
   BootstrapPayload,
+  ContextAssetSummary,
+  ContextProcessingEvent,
   Effort,
+  LocalModelPackageState,
   Project,
   ProviderSummary,
   RunMode,
   SessionKind,
+  WorkspaceContextCandidate,
 } from "@maestro/contracts";
 import { api } from "@renderer/lib/api";
 import { cn, RUN_LABELS, stateTone } from "@renderer/lib/utils";
 import { useAppStore } from "@renderer/store/app-store";
 import { Button } from "@renderer/components/ui/button";
 import { Badge } from "@renderer/components/ui/badge";
-import { Select, Textarea } from "@renderer/components/ui/form";
+import { Select } from "@renderer/components/ui/form";
 import { LoadingPane } from "@renderer/components/ui/skeleton";
 import { ErrorPane } from "@renderer/components/ui/feedback";
 import { SuggestedActions } from "@renderer/components/ui/suggested-actions";
 import { MessageList } from "@renderer/components/conversation/message-list";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+} from "@renderer/components/conversation/composer-editor";
+import { ContextAssetTray } from "@renderer/components/conversation/context-asset-tray";
+import { AudioRecorder } from "@renderer/components/conversation/audio-recorder";
 import { PlanApprovalCard } from "@renderer/components/conversation/plan-approval";
 import { AgentPipeline } from "@renderer/components/operations/agent-pipeline";
 
@@ -55,6 +72,8 @@ const modes: Array<{ id: RunMode; label: string; description: string; icon: type
     icon: MessageCircle,
   },
 ];
+
+const MAX_COMPOSER_CONTEXT_BYTES = 4 * 1024 * 1024 * 1024;
 
 const emptyStates: Record<RunMode, { title: string; description: string; suggestions: string[] }> =
   {
@@ -81,7 +100,7 @@ const emptyStates: Record<RunMode, { title: string; description: string; suggest
     chat: {
       title: "Em que posso ajudar?",
       description:
-        "Converse sem acesso ao workspace. Ideal para explorar ideias, tirar dúvidas e preparar uma tarefa.",
+        "Converse sem acesso geral ao workspace. O modelo recebe somente os itens anexados ou mencionados com @.",
       suggestions: [
         "Ajude a organizar uma ideia de produto",
         "Explique uma decisão técnica com exemplos",
@@ -109,7 +128,7 @@ export function ConversationPage({
   const queryClient = useQueryClient();
   const setView = useAppStore((state) => state.setView);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerEditorHandle>(null);
   const query = useQuery({
     queryKey: ["conversation", id],
     queryFn: () => api().getConversation(id),
@@ -135,7 +154,17 @@ export function ConversationPage({
     detail?.conversation.workspaceRootId ?? project.roots[0]?.id ?? "",
   );
   const [content, setContent] = useState("");
-  const [attachments, setAttachments] = useState<string[]>([]);
+  const [contextAssets, setContextAssets] = useState<ContextAssetSummary[]>([]);
+  const contextAssetsRef = useRef<ContextAssetSummary[]>([]);
+  const [contextProgress, setContextProgress] = useState<Map<string, ContextProcessingEvent>>(
+    new Map(),
+  );
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [attachmentMenu, setAttachmentMenu] = useState(false);
+  const [recorderOpen, setRecorderOpen] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
+  const [stagingCount, setStagingCount] = useState(0);
+  const [localModel, setLocalModel] = useState<LocalModelPackageState | null>(null);
   const [modeMenu, setModeMenu] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
@@ -160,6 +189,160 @@ export function ConversationPage({
   const selectedConnection =
     availableConnections.find((item) => item.connection.id === providerConnectionId) ??
     availableConnections[0];
+
+  contextAssetsRef.current = contextAssets;
+
+  const addContextAssets = useCallback(
+    (values: ContextAssetSummary[]) => {
+      setContextError(null);
+      const current = contextAssetsRef.current;
+      const currentIds = new Set(current.map((asset) => asset.id));
+      const byId = new Map(current.map((asset) => [asset.id, asset]));
+      values.forEach((asset) => byId.set(asset.id, asset));
+      const merged = [...byId.values()];
+      const next: ContextAssetSummary[] = [];
+      const overflow: ContextAssetSummary[] = [];
+      let totalBytes = 0;
+      for (const asset of merged) {
+        if (next.length >= 20 || totalBytes + asset.size > MAX_COMPOSER_CONTEXT_BYTES) {
+          overflow.push(asset);
+          continue;
+        }
+        next.push(asset);
+        totalBytes += asset.size;
+      }
+      contextAssetsRef.current = next;
+      setContextAssets(next);
+      if (overflow.length > 0) {
+        setContextError(
+          merged.length > 20
+            ? "Use no máximo 20 itens por mensagem. Refine a seleção."
+            : "Os itens somam mais de 4 GiB. Remova alguns anexos.",
+        );
+        void Promise.allSettled(
+          overflow
+            .filter((asset) => !currentIds.has(asset.id))
+            .map((asset) => api().removeContextAsset(id, asset.id)),
+        );
+      }
+    },
+    [id],
+  );
+
+  const stageFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      setStagingCount((value) => value + 1);
+      try {
+        addContextAssets(await api().stageDroppedFiles(id, files));
+      } catch (error) {
+        setContextError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setStagingCount((value) => Math.max(0, value - 1));
+      }
+    },
+    [addContextAssets, id],
+  );
+
+  const searchWorkspace = useCallback(
+    (query: string) => api().searchWorkspaceContext({ projectId: project.id, query, limit: 12 }),
+    [project.id],
+  );
+
+  const addWorkspaceMention = useCallback(
+    (candidate: WorkspaceContextCandidate) => {
+      setStagingCount((value) => value + 1);
+      void api()
+        .prepareWorkspaceContext({
+          conversationId: id,
+          candidates: [
+            {
+              workspaceRootId: candidate.workspaceRootId,
+              relativePath: candidate.relativePath,
+              kind: candidate.kind,
+            },
+          ],
+        })
+        .then(addContextAssets)
+        .catch((error: unknown) =>
+          setContextError(error instanceof Error ? error.message : String(error)),
+        )
+        .finally(() => setStagingCount((value) => Math.max(0, value - 1)));
+    },
+    [addContextAssets, id],
+  );
+
+  useEffect(() => {
+    const disposeContext = api().onContextProcessing((event) => {
+      if (event.conversationId !== id) return;
+      setContextProgress((current) => new Map(current).set(event.asset.id, event));
+      setContextAssets((current) => {
+        const next = current.map((asset) => (asset.id === event.asset.id ? event.asset : asset));
+        contextAssetsRef.current = next;
+        return next;
+      });
+    });
+    const disposeModel = api().onLocalModelState(setLocalModel);
+    void api().getLocalModelState().then(setLocalModel);
+    return () => {
+      disposeContext();
+      disposeModel();
+    };
+  }, [id]);
+
+  useEffect(() => {
+    if (
+      localModel?.status !== "ready" ||
+      !contextAssets.some((asset) => asset.status === "needs_model")
+    )
+      return;
+    const selectedIds = new Set(contextAssets.map((asset) => asset.id));
+    void api()
+      .listContextAssets(id)
+      .then((assets) =>
+        setContextAssets((current) => {
+          const refreshed = new Map(
+            assets.filter((asset) => selectedIds.has(asset.id)).map((asset) => [asset.id, asset]),
+          );
+          const next = current.map((asset) => refreshed.get(asset.id) ?? asset);
+          contextAssetsRef.current = next;
+          return next;
+        }),
+      )
+      .catch((error: unknown) =>
+        setContextError(error instanceof Error ? error.message : String(error)),
+      );
+  }, [contextAssets, id, localModel?.status]);
+
+  const processingContextKey = contextAssets
+    .filter((asset) => asset.status === "staging" || asset.status === "processing")
+    .map((asset) => asset.id)
+    .sort()
+    .join(":");
+  useEffect(() => {
+    if (!processingContextKey) return;
+    let active = true;
+    const refresh = () => {
+      void api()
+        .listContextAssets(id)
+        .then((assets) => {
+          if (!active) return;
+          const byId = new Map(assets.map((asset) => [asset.id, asset]));
+          setContextAssets((current) => {
+            const next = current.map((asset) => byId.get(asset.id) ?? asset);
+            contextAssetsRef.current = next;
+            return next;
+          });
+        })
+        .catch(() => null);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [id, processingContextKey]);
 
   useEffect(() => {
     if (!detail) return;
@@ -220,7 +403,7 @@ export function ConversationPage({
         modelId: selectedModel.id,
         effort,
         workspaceRootId,
-        attachmentPaths: attachments,
+        contextItems: contextAssets.map((asset) => ({ type: "asset" as const, assetId: asset.id })),
       });
     },
     onSuccess: (value) => {
@@ -236,15 +419,50 @@ export function ConversationPage({
           : current,
       );
       setContent("");
-      setAttachments([]);
+      contextAssetsRef.current = [];
+      setContextAssets([]);
+      setContextProgress(new Map());
+      setContextError(null);
       stickToBottom.current = true;
       void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
 
-  const chooseAttachments = async () => {
-    const values = await api().selectAttachments();
-    setAttachments((current) => [...new Set([...current, ...values])].slice(0, 20));
+  const chooseAttachments = async (kind: "files" | "folder" | "clipboard") => {
+    setAttachmentMenu(false);
+    setContextError(null);
+    setStagingCount((value) => value + 1);
+    try {
+      const values =
+        kind === "files"
+          ? await api().selectContextFiles(id)
+          : kind === "folder"
+            ? await api().selectContextFolder(id)
+            : await api().stageClipboard(id);
+      addContextAssets(values);
+    } catch (error) {
+      setContextError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStagingCount((value) => Math.max(0, value - 1));
+    }
+  };
+
+  const removeContextAsset = async (asset: ContextAssetSummary) => {
+    setContextAssets((current) => {
+      const next = current.filter((item) => item.id !== asset.id);
+      contextAssetsRef.current = next;
+      return next;
+    });
+    setContextProgress((current) => {
+      const next = new Map(current);
+      next.delete(asset.id);
+      return next;
+    });
+    try {
+      await api().removeContextAsset(id, asset.id);
+    } catch (error) {
+      setContextError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   if (query.isError) return <ErrorPane error={query.error} onRetry={() => void query.refetch()} />;
@@ -252,9 +470,23 @@ export function ConversationPage({
   const activeMode = modes.find((item) => item.id === mode)!;
   const emptyState = emptyStates[mode];
   const ActiveIcon = activeMode.icon;
+  const contextReady = contextAssets.every((asset) => asset.status === "ready");
+  const visionBlocked = Boolean(
+    selectedModel &&
+    !selectedModel.capabilities.vision &&
+    contextAssets.some((asset) => asset.requiresVision),
+  );
+  const videoFramesOmitted = Boolean(
+    selectedModel &&
+    !selectedModel.capabilities.vision &&
+    contextAssets.some((asset) => asset.kind === "video"),
+  );
   const canSend = Boolean(
-    content.trim() &&
+    (sessionKind === "pty" ? content.trim() : content.trim() || contextAssets.length > 0) &&
     workspaceRootId &&
+    (sessionKind === "pty" || (contextReady && !visionBlocked)) &&
+    stagingCount === 0 &&
+    !recorderOpen &&
     (sessionKind === "pty" ||
       (selectedProvider &&
         selectedModel &&
@@ -488,7 +720,7 @@ export function ConversationPage({
                 {mode === "maestro"
                   ? "Escrita só após aprovação"
                   : mode === "chat"
-                    ? "Sem acesso ao workspace"
+                    ? "Sem acesso ao workspace · somente contexto anexado"
                     : "Permissões do projeto"}
               </span>
               <span className="sm:hidden">Protegido</span>
@@ -564,7 +796,7 @@ export function ConversationPage({
                   ) : (
                     <div className="flex min-h-[62px] items-center gap-2 rounded-[10px] border border-success/15 bg-success/[0.04] px-3 text-[10px] text-text-muted">
                       <LockKeyhole size={13} className="shrink-0 text-success" />
-                      Sem acesso ao workspace
+                      Sem acesso ao workspace; somente anexos e menções @
                     </div>
                   )}
 
@@ -666,35 +898,58 @@ export function ConversationPage({
             ) : null}
           </div>
 
-          <div className="composer-card p-2">
-            {attachments.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 border-b border-border/70 px-1 pb-2">
-                {attachments.map((attachment) => (
-                  <span
-                    key={attachment}
-                    className="inline-flex items-center gap-1.5 rounded-[7px] border border-border bg-bg-elevated px-2 py-1 text-[10px] text-text-muted"
-                    title={attachment}
-                  >
-                    <Paperclip size={10} />
-                    {attachment.split(/[\\/]/).at(-1)}
-                    <button
-                      aria-label="Remover anexo"
-                      onClick={() =>
-                        setAttachments((values) => values.filter((value) => value !== attachment))
-                      }
-                    >
-                      <X size={10} />
-                    </button>
-                  </span>
-                ))}
-              </div>
+          <div
+            className={cn("composer-card relative p-2", dropActive && "is-drop-active")}
+            onDragEnter={(event) => {
+              if (event.dataTransfer.types.includes("Files")) {
+                event.preventDefault();
+                setDropActive(true);
+              }
+            }}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setDropActive(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDropActive(false);
+              void stageFiles(Array.from(event.dataTransfer.files));
+            }}
+          >
+            {dropActive ? <div className="composer-drop-overlay">Solte para anexar</div> : null}
+            <ContextAssetTray
+              assets={contextAssets}
+              progress={contextProgress}
+              onRemove={(asset) => void removeContextAsset(asset)}
+            />
+            {recorderOpen ? (
+              <AudioRecorder
+                onClose={() => setRecorderOpen(false)}
+                onSave={async (data, mimeType, durationMs) => {
+                  addContextAssets([
+                    await api().stageRecordedAudio({
+                      conversationId: id,
+                      data,
+                      mimeType,
+                      durationMs,
+                    }),
+                  ]);
+                }}
+              />
             ) : null}
-            <Textarea
+            <ComposerEditor
               ref={composerRef}
-              className="min-h-[68px] max-h-44 border-0 bg-transparent px-2.5 py-2.5 text-[14px] focus:bg-transparent focus:ring-0"
-              rows={3}
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={setContent}
+              onSubmit={() => {
+                if (canSend && !send.isPending) send.mutate();
+              }}
+              searchWorkspace={searchWorkspace}
+              onMention={addWorkspaceMention}
+              onPasteFiles={(files) => void stageFiles(files)}
               placeholder={
                 sessionKind === "pty"
                   ? "Abra um terminal completo nesta raiz…"
@@ -702,25 +957,48 @@ export function ConversationPage({
                     ? "Descreva o resultado que você quer…"
                     : mode === "agent"
                       ? "Peça uma alteração direta no workspace…"
-                      : "Escreva uma mensagem…"
+                      : "Escreva uma mensagem… use @ para mencionar arquivos"
               }
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && canSend && !send.isPending) {
-                  event.preventDefault();
-                  send.mutate();
-                }
-              }}
             />
             <div className="flex items-center gap-1 px-1 pt-1">
-              <Button
-                size="icon"
-                variant="ghost"
-                aria-label="Adicionar anexos"
-                title="Adicionar anexos"
-                onClick={() => void chooseAttachments()}
-              >
-                <Paperclip size={14} />
-              </Button>
+              <div className="relative">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Adicionar contexto"
+                  title="Adicionar contexto"
+                  className={attachmentMenu ? "bg-primary/10 text-primary-soft" : undefined}
+                  onClick={() => setAttachmentMenu((value) => !value)}
+                >
+                  {stagingCount > 0 ? (
+                    <LoaderCircle className="animate-spin" size={14} />
+                  ) : (
+                    <Paperclip size={14} />
+                  )}
+                </Button>
+                {attachmentMenu ? (
+                  <div className="attachment-menu glass-popover">
+                    <button type="button" onClick={() => void chooseAttachments("files")}>
+                      <FileUp size={13} /> Escolher arquivos
+                    </button>
+                    <button type="button" onClick={() => void chooseAttachments("folder")}>
+                      <FolderOpen size={13} /> Escolher pasta
+                    </button>
+                    <button type="button" onClick={() => void chooseAttachments("clipboard")}>
+                      <Clipboard size={13} /> Colar conteúdo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecorderOpen(true);
+                        setAttachmentMenu(false);
+                      }}
+                    >
+                      <Mic size={13} /> Gravar áudio
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               <Button
                 size="icon"
                 variant="ghost"
@@ -748,12 +1026,55 @@ export function ConversationPage({
               </Button>
             </div>
           </div>
-          {send.error ? (
+          {contextAssets.some((asset) => asset.status === "needs_model") ? (
+            <div className="mt-2 flex items-center gap-2 rounded-[9px] border border-warning/15 bg-warning/[0.045] px-3 py-2 text-[10px] text-warning">
+              <Mic size={11} />
+              <span className="min-w-0 flex-1">
+                Áudio e vídeo são transcritos localmente. O pacote Whisper é necessário
+                {localModel?.status === "downloading" && localModel.progress !== null
+                  ? ` · ${Math.round(localModel.progress * 100)}%`
+                  : "."}
+              </span>
+              <button
+                type="button"
+                className="font-semibold hover:text-text"
+                disabled={localModel?.status === "downloading"}
+                onClick={() => {
+                  setContextError(null);
+                  void api()
+                    .downloadLocalModel()
+                    .then(setLocalModel)
+                    .catch((error: unknown) =>
+                      setContextError(error instanceof Error ? error.message : String(error)),
+                    );
+                }}
+              >
+                {localModel?.status === "downloading" ? "Baixando…" : "Baixar pacote"}
+              </button>
+            </div>
+          ) : null}
+          {visionBlocked ? (
+            <button
+              type="button"
+              className="mt-2 flex w-full items-center gap-2 rounded-[9px] border border-warning/15 bg-warning/[0.045] px-3 py-2 text-left text-[10px] text-warning"
+              onClick={() => setConfigurationOpen(true)}
+            >
+              <AlertTriangle size={11} /> A imagem exige um modelo com visão. Escolha outro modelo.
+            </button>
+          ) : null}
+          {videoFramesOmitted ? (
+            <p className="mt-2 flex items-center gap-2 rounded-[9px] border border-info/15 bg-info/[0.035] px-3 py-2 text-[10px] text-info">
+              <FileVideo size={11} /> O vídeo seguirá com a transcrição local; os quadros serão
+              omitidos porque o modelo não possui visão.
+            </p>
+          ) : null}
+          {send.error || contextError ? (
             <p
               className="mt-2 rounded-[9px] border border-danger/15 bg-danger/[0.045] px-3 py-2 text-[11px] text-danger"
               role="alert"
             >
-              {send.error instanceof Error ? send.error.message : String(send.error)}
+              {contextError ??
+                (send.error instanceof Error ? send.error.message : String(send.error))}
             </p>
           ) : null}
           {!selectedProvider && sessionKind === "structured" ? (
