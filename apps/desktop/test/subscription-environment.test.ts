@@ -1,4 +1,5 @@
 import type { ProviderConnection } from "@maestro/contracts";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   hasForbiddenBillingEnvironment,
@@ -26,6 +27,27 @@ function connection(
 }
 
 describe("subscription-only process environment", () => {
+  it("prioritizes user-installed CLIs over binaries from the desktop session PATH", () => {
+    const env = subscriptionEnvironment(connection("codex", "/accounts/codex-2"), {
+      HOME: "/home/maestro",
+      PATH: ["/usr/bin", "/home/maestro/.npm-global/bin", "/bin"].join(path.delimiter),
+      PNPM_HOME: "/home/maestro/custom-pnpm",
+    });
+
+    expect(env.PATH?.split(path.delimiter)).toEqual([
+      "/home/maestro/custom-pnpm",
+      "/home/maestro/.local/bin",
+      "/home/maestro/.npm-global/bin",
+      "/home/maestro/.local/share/pnpm",
+      "/home/maestro/.bun/bin",
+      "/home/maestro/.volta/bin",
+      "/home/maestro/.cargo/bin",
+      "/home/maestro/Library/pnpm",
+      "/usr/bin",
+      "/bin",
+    ]);
+  });
+
   it("isolates Claude accounts and removes every paid API/gateway credential", () => {
     const env = subscriptionEnvironment(connection("claude-code", "/accounts/claude-2"), {
       PATH: "/bin",
