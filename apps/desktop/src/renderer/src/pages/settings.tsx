@@ -662,31 +662,37 @@ function AgentAccounts({
 
   return (
     <section className="settings-card mt-5 overflow-hidden">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/75 px-4 py-4 md:px-5">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="grid size-9 shrink-0 place-items-center rounded-[11px] border border-border bg-bg-elevated/80 text-primary-soft">
-            <ListOrdered size={15} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-[14px] font-semibold">Contas dos agentes</h3>
-              <InfoTooltip
-                content="Os agentes usam a primeira conta compatível e disponível. Quando ela atinge o limite de sessões, o Maestro tenta a próxima conta do mesmo provedor na ordem."
-                label="Ajuda sobre as contas dos agentes"
-              />
-              <Badge tone="primary">ordem = prioridade</Badge>
+      <div className="relative overflow-hidden border-b border-border/75 px-4 py-4 md:px-6 md:py-5">
+        <div className="pointer-events-none absolute -right-16 -top-20 size-48 rounded-full bg-primary/[0.035] blur-2xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3.5">
+            <div className="grid size-10 shrink-0 place-items-center rounded-[12px] border border-primary/18 bg-primary/[0.065] text-primary-soft shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]">
+              <ListOrdered size={16} />
             </div>
-            <p className="mt-1 text-[10px] text-text-faint">
-              Arraste pelo marcador à esquerda. A conta no topo tem prioridade mais alta.
-            </p>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-[14px] font-semibold tracking-[-0.01em]">Contas dos agentes</h3>
+                <Badge tone="primary">ordem = prioridade</Badge>
+                <InfoTooltip
+                  content="Os agentes usam a primeira conta compatível e disponível. Quando ela atinge o limite de sessões, o Maestro tenta a próxima conta do mesmo provedor na ordem."
+                  label="Ajuda sobre as contas dos agentes"
+                />
+              </div>
+              <p className="mt-1 text-[10.5px] leading-4 text-text-muted">
+                Reordene pelo marcador. O Maestro tenta primeiro as contas mais acima.
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2 rounded-full border border-border bg-bg-elevated/65 px-2.5 py-1.5 text-[9px] font-medium text-text-muted">
-          <span className="size-1.5 rounded-full bg-success" />
-          {orderedAccounts.filter((account) => account.connection.enabled).length} ativas
+          <div className="flex shrink-0 items-center gap-2 rounded-full border border-success/18 bg-success/[0.045] px-3 py-1.5 text-[9.5px] font-medium text-text-muted">
+            <span className="size-1.5 rounded-full bg-success shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-success)_10%,transparent)]" />
+            <strong className="font-semibold text-text">
+              {orderedAccounts.filter((account) => account.connection.enabled).length}
+            </strong>
+            ativas
+          </div>
         </div>
       </div>
-      <div className="space-y-2 bg-bg/20 p-3 md:p-4">
+      <div className="space-y-3 bg-bg/25 p-3 md:p-4">
         {orderedAccounts.length === 0 ? (
           <div className="grid min-h-32 place-items-center rounded-[14px] border border-dashed border-border p-6 text-center">
             <div>
@@ -704,10 +710,10 @@ function AgentAccounts({
             <div
               key={connectionId}
               className={cn(
-                "rounded-[14px] border bg-surface/75 transition-[border-color,background-color,box-shadow]",
+                "rounded-[16px] border bg-surface/78 shadow-[0_10px_28px_-26px_rgb(0_0_0/0.8)] transition-[border-color,background-color,box-shadow]",
                 dragOverId === connectionId && draggingId !== connectionId
                   ? "border-primary/40 bg-primary/[0.055] shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-primary)_8%,transparent)]"
-                  : "border-border/80 hover:border-border-strong hover:bg-surface",
+                  : "border-border/85 hover:border-border-strong hover:bg-surface",
                 draggingId === connectionId && "opacity-55",
               )}
               onDragOver={(event) => {
@@ -756,59 +762,79 @@ function AgentAccounts({
           );
         })}
       </div>
-      <div className="flex items-start gap-2.5 border-t border-warning/18 bg-warning/[0.028] px-4 py-3 text-[9.5px] leading-4 text-warning md:px-5">
-        <ShieldCheck className="mt-0.5 shrink-0" size={12} />
-        <p>
-          Para garantia total, desative “usage credits/extra usage” em cada conta no próprio
-          Claude/ChatGPT. O Maestro remove chaves e gateways, nunca compra créditos nem faz fallback
-          pago, mas não pode alterar esse controle do servidor.
-        </p>
-      </div>
-      <div className="border-t border-border bg-bg-elevated/25 p-4 md:p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <Plus size={12} className="text-primary-soft" />
-          <p className="text-[11px] font-semibold">Adicionar à fila</p>
-          <InfoTooltip
-            content="Cria um perfil isolado dentro do Maestro. Depois, conecte a conta do provedor e arraste o perfil para definir sua prioridade."
-            label="Ajuda para adicionar uma conta"
-          />
+      <div className="border-t border-border/75 bg-bg/20 px-3 py-3.5 md:px-4">
+        <div className="flex items-start gap-3 rounded-[13px] border border-warning/18 bg-warning/[0.035] px-3.5 py-3">
+          <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-warning/10 text-warning">
+            <ShieldCheck size={14} />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[10.5px] font-semibold text-warning">
+              Proteção contra cobrança extra
+            </p>
+            <p className="mt-1 text-[10px] leading-[1.55] text-text-muted">
+              O Maestro remove chaves e gateways e nunca compra créditos. Para bloquear também o
+              controle do servidor, desative <strong>usage credits/extra usage</strong> diretamente
+              em cada conta Claude ou ChatGPT.
+            </p>
+          </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-[minmax(170px,.7fr)_minmax(220px,1.3fr)_auto] sm:items-end">
-          <div>
-            <label className="mb-1.5 block text-[9px] font-semibold uppercase tracking-[0.1em] text-text-faint">
-              Provedor
-            </label>
-            <Select
-              className="w-full"
-              aria-label="Provedor da nova conta"
-              value={providerId}
-              onChange={(event) => setProviderId(event.target.value as "codex" | "claude-code")}
+      </div>
+      <div className="border-t border-border/75 bg-bg-elevated/20 p-3 md:p-4">
+        <div className="rounded-[15px] border border-border/80 bg-surface/60 p-4 md:p-4.5">
+          <div className="flex items-start gap-3">
+            <span className="grid size-8 shrink-0 place-items-center rounded-[9px] border border-primary/15 bg-primary/[0.055] text-primary-soft">
+              <Plus size={13} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[11.5px] font-semibold">Adicionar outra conta</p>
+                <InfoTooltip
+                  content="Cria um perfil isolado dentro do Maestro. Depois, conecte a conta do provedor e arraste o perfil para definir sua prioridade."
+                  label="Ajuda para adicionar uma conta"
+                />
+              </div>
+              <p className="mt-0.5 text-[9.5px] leading-4 text-text-faint">
+                A nova conta entra no fim da fila e pode ser reordenada depois.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(190px,.75fr)_minmax(260px,1.35fr)_auto] lg:items-end">
+            <div>
+              <label className="mb-1.5 block text-[9px] font-semibold uppercase leading-4 tracking-[0.09em] text-text-faint">
+                Provedor
+              </label>
+              <Select
+                className="w-full"
+                aria-label="Provedor da nova conta"
+                value={providerId}
+                onChange={(event) => setProviderId(event.target.value as "codex" | "claude-code")}
+              >
+                <option value="claude-code">Anthropic · Claude Code</option>
+                <option value="codex">OpenAI · Codex</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[9px] font-semibold uppercase leading-4 tracking-[0.09em] text-text-faint">
+                Nome dentro do Maestro
+              </label>
+              <Input
+                aria-label="Nome da nova conta"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Ex.: Claude pessoal, Codex trabalho"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && name.trim()) create.mutate();
+                }}
+              />
+            </div>
+            <Button
+              className="w-full lg:min-w-40 lg:w-auto"
+              disabled={!name.trim() || create.isPending}
+              onClick={() => create.mutate()}
             >
-              <option value="claude-code">Anthropic · Claude Code</option>
-              <option value="codex">OpenAI · Codex</option>
-            </Select>
+              <Plus size={13} /> {create.isPending ? "Adicionando…" : "Adicionar conta"}
+            </Button>
           </div>
-          <div>
-            <label className="mb-1.5 block text-[9px] font-semibold uppercase tracking-[0.1em] text-text-faint">
-              Nome dentro do Maestro
-            </label>
-            <Input
-              aria-label="Nome da nova conta"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Ex.: Claude pessoal, Codex trabalho"
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && name.trim()) create.mutate();
-              }}
-            />
-          </div>
-          <Button
-            className="w-full sm:w-auto"
-            disabled={!name.trim() || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            <Plus size={13} /> {create.isPending ? "Adicionando…" : "Adicionar conta"}
-          </Button>
         </div>
       </div>
       {create.error || update.error || remove.error || reorder.error ? (
@@ -873,132 +899,145 @@ function AgentAccountRow({
     }
   };
   return (
-    <div className={cn("p-2.5 md:p-3", !connection.enabled && "opacity-55")}>
-      <div className="flex items-start gap-2 md:gap-3">
+    <div className={cn("p-3 md:p-4", !connection.enabled && "opacity-55")}>
+      <div className="grid gap-3 md:grid-cols-[72px_minmax(0,1fr)] lg:grid-cols-[72px_minmax(0,1fr)_auto] lg:gap-4">
         <button
           type="button"
           draggable={!busy}
           disabled={busy}
-          className="mt-1 grid size-8 shrink-0 cursor-grab place-items-center rounded-[9px] border border-transparent text-text-faint transition-colors hover:border-border hover:bg-bg-elevated hover:text-text active:cursor-grabbing disabled:cursor-default"
+          className="flex min-h-12 w-full shrink-0 cursor-grab items-center justify-center gap-2 rounded-[12px] border border-border/75 bg-bg-elevated/45 px-2 py-2 text-text-faint transition-[border-color,background-color,color,box-shadow] hover:border-primary/25 hover:bg-primary/[0.04] hover:text-primary-soft hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-primary)_5%,transparent)] active:cursor-grabbing disabled:cursor-default md:row-span-2 md:min-h-[124px] md:flex-col md:gap-2.5 lg:row-span-1"
           title="Arraste para reordenar. Com foco, use as setas para cima e para baixo."
           aria-label={`Reordenar ${connection.name}, prioridade ${rank} de ${total}`}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
           onKeyDown={handleReorderKey}
         >
-          <GripVertical size={15} />
+          <GripVertical size={16} />
+          <span aria-hidden className="h-5 w-px bg-border/90 md:h-px md:w-8" />
+          <span className="flex items-baseline gap-1.5 md:flex-col md:items-center md:gap-1">
+            <span className="text-[16px] font-bold leading-none tabular-nums text-primary-soft">
+              {String(rank).padStart(2, "0")}
+            </span>
+            <span className="text-[8px] font-bold uppercase leading-none tracking-[0.09em] text-text-faint">
+              prioridade
+            </span>
+          </span>
         </button>
-        <div className="mt-0.5 w-7 shrink-0 text-center">
-          <span className="block text-[11px] font-bold tabular-nums text-primary-soft">
-            {String(rank).padStart(2, "0")}
-          </span>
-          <span className="mt-0.5 block text-[6.5px] font-bold uppercase tracking-[0.08em] text-text-faint">
-            prioridade
-          </span>
-        </div>
-        <div className="hidden size-10 shrink-0 place-items-center self-start rounded-[12px] border border-border bg-bg-elevated text-[10px] font-bold tracking-[0.04em] text-primary-soft sm:grid">
-          {details.initials}
-        </div>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-text">{details.company}</span>
-            <span className="text-[9px] text-text-faint">·</span>
-            <span className="text-[10px] font-medium text-text-muted">{details.product}</span>
-            <Badge tone={tone}>{healthLabel}</Badge>
-            {connection.isDefault ? <Badge tone="neutral">perfil atual</Badge> : null}
-            {isMaestro ? <Badge tone="primary">Maestro</Badge> : null}
+          <div className="flex items-start gap-3">
+            <div className="grid size-11 shrink-0 place-items-center rounded-[12px] border border-border/85 bg-bg-elevated text-[10px] font-bold tracking-[0.04em] text-primary-soft shadow-[inset_0_1px_0_rgb(255_255_255/0.035)]">
+              {details.initials}
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+                <span className="text-[11.5px] font-semibold text-text">{details.company}</span>
+                <span className="text-[9px] text-text-faint">·</span>
+                <span className="text-[10.5px] font-medium text-text-muted">{details.product}</span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <Badge tone={tone}>{healthLabel}</Badge>
+                {connection.isDefault ? <Badge tone="neutral">perfil atual</Badge> : null}
+                {isMaestro ? <Badge tone="primary">Maestro</Badge> : null}
+              </div>
+            </div>
           </div>
-          <div className="mt-2.5 grid gap-3 lg:grid-cols-[minmax(210px,1fr)_auto] lg:items-end">
-            <div className="min-w-0">
-              <div className="max-w-md">
-                <label
-                  htmlFor={`account-name-${connection.id}`}
-                  className="mb-1 flex items-center gap-1 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-text-faint"
-                >
-                  <Pencil size={9} /> Nome dentro do Maestro · editável
-                </label>
-                <Input
-                  id={`account-name-${connection.id}`}
-                  className="h-8.5 bg-bg-elevated/65 text-[11.5px] font-semibold"
-                  value={accountName}
-                  aria-label="Nome da conta no Maestro"
-                  disabled={busy}
-                  onChange={(event) => setAccountName(event.target.value)}
-                  onBlur={saveName}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                    if (event.key === "Escape") {
-                      setAccountName(connection.name);
-                      event.currentTarget.blur();
-                    }
-                  }}
-                />
-              </div>
-              <p
-                className="mt-1.5 truncate text-[9px] leading-4 text-text-faint"
-                title={connection.stateDirectory ?? undefined}
-              >
-                {health.message} ·{" "}
-                {connection.stateDirectory
-                  ? compactPath(connection.stateDirectory, 72)
-                  : "diretório padrão do CLI"}
-              </p>
+          <div className="mt-3 max-w-2xl">
+            <label
+              htmlFor={`account-name-${connection.id}`}
+              className="mb-1.5 flex items-center gap-1.5 text-[9px] font-semibold uppercase leading-4 tracking-[0.09em] text-text-faint"
+            >
+              <Pencil size={10} /> Nome dentro do Maestro
+              <span className="font-medium normal-case tracking-normal text-text-faint/75">
+                · editável
+              </span>
+            </label>
+            <Input
+              id={`account-name-${connection.id}`}
+              className="h-10 bg-bg-elevated/65 text-[11.5px] font-semibold"
+              value={accountName}
+              aria-label="Nome da conta no Maestro"
+              disabled={busy}
+              onChange={(event) => setAccountName(event.target.value)}
+              onBlur={saveName}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  setAccountName(connection.name);
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          </div>
+          <p
+            className="mt-2 text-[9.5px] leading-[1.55] text-text-faint"
+            title={connection.stateDirectory ?? undefined}
+          >
+            {health.message}
+            <span aria-hidden className="px-1 text-text-faint/55">
+              ·
+            </span>
+            <span className="break-all sm:break-normal">
+              {connection.stateDirectory
+                ? compactPath(connection.stateDirectory, 72)
+                : "diretório padrão do CLI"}
+            </span>
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3 md:col-start-2 lg:col-start-3 lg:row-start-1 lg:max-w-[290px] lg:self-stretch lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+          <div className="rounded-[10px] border border-border/75 bg-bg-elevated/45 px-2.5 py-1.5">
+            <div className="flex items-center gap-0.5 text-[8.5px] font-semibold uppercase leading-4 tracking-[0.08em] text-text-faint">
+              <label htmlFor={`account-sessions-${connection.id}`}>Sessões</label>
+              <InfoTooltip
+                className="size-4"
+                content="Máximo de sessões simultâneas permitidas para esta conta. Ao atingir o limite, o Maestro escolhe outra conta disponível ou aguarda."
+                label="Ajuda sobre sessões simultâneas"
+              />
             </div>
-            <div className="flex flex-wrap items-end gap-1.5 lg:justify-end">
-              <div>
-                <div className="flex items-center gap-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-text-faint">
-                  <label htmlFor={`account-sessions-${connection.id}`}>sessões</label>
-                  <InfoTooltip
-                    className="size-4"
-                    content="Máximo de sessões simultâneas permitidas para esta conta. Ao atingir o limite, o Maestro escolhe outra conta disponível ou aguarda."
-                    label="Ajuda sobre sessões simultâneas"
-                  />
-                </div>
-                <Input
-                  id={`account-sessions-${connection.id}`}
-                  className="mt-1 h-8 w-14 bg-bg-elevated/65"
-                  type="number"
-                  min={1}
-                  max={16}
-                  defaultValue={connection.concurrencyLimit}
-                  disabled={busy}
-                  onBlur={(event) =>
-                    onUpdate({
-                      concurrencyLimit: Math.max(1, Math.min(16, event.target.valueAsNumber || 1)),
-                    })
-                  }
-                />
-              </div>
-              <Button size="sm" variant="secondary" disabled={busy} onClick={onLogin}>
-                <Link2 size={11} /> {health.status === "ready" ? "Reconectar" : "Conectar"}
-              </Button>
+            <Input
+              id={`account-sessions-${connection.id}`}
+              className="mt-0.5 h-7.5 w-14 bg-surface text-center text-[11px] font-semibold tabular-nums"
+              type="number"
+              min={1}
+              max={16}
+              defaultValue={connection.concurrencyLimit}
+              disabled={busy}
+              onBlur={(event) =>
+                onUpdate({
+                  concurrencyLimit: Math.max(1, Math.min(16, event.target.valueAsNumber || 1)),
+                })
+              }
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button className="h-10" variant="secondary" disabled={busy} onClick={onLogin}>
+              <Link2 size={12} /> {health.status === "ready" ? "Reconectar" : "Conectar"}
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              title={connection.enabled ? "Desativar" : "Ativar"}
+              aria-label={connection.enabled ? "Desativar conta" : "Ativar conta"}
+              disabled={busy}
+              onClick={() => onUpdate({ enabled: !connection.enabled })}
+            >
+              <Power size={14} />
+            </Button>
+            {!connection.isDefault ? (
               <Button
-                size="icon"
-                variant="ghost"
-                title={connection.enabled ? "Desativar" : "Ativar"}
-                aria-label={connection.enabled ? "Desativar conta" : "Ativar conta"}
-                disabled={busy}
-                onClick={() => onUpdate({ enabled: !connection.enabled })}
+                size={confirmDelete ? "sm" : "icon"}
+                variant={confirmDelete ? "danger" : "ghost"}
+                title={confirmDelete ? "Clique novamente para confirmar" : "Remover perfil"}
+                aria-label={confirmDelete ? "Confirmar remoção da conta" : "Remover conta"}
+                disabled={busy || account.activeSessions > 0}
+                onBlur={() => setConfirmDelete(false)}
+                onClick={() => {
+                  if (confirmDelete) onDelete();
+                  else setConfirmDelete(true);
+                }}
               >
-                <Power size={13} />
+                <Trash2 size={13} /> {confirmDelete ? "Confirmar" : null}
               </Button>
-              {!connection.isDefault ? (
-                <Button
-                  size={confirmDelete ? "sm" : "icon"}
-                  variant={confirmDelete ? "danger" : "ghost"}
-                  title={confirmDelete ? "Clique novamente para confirmar" : "Remover perfil"}
-                  aria-label={confirmDelete ? "Confirmar remoção da conta" : "Remover conta"}
-                  disabled={busy || account.activeSessions > 0}
-                  onBlur={() => setConfirmDelete(false)}
-                  onClick={() => {
-                    if (confirmDelete) onDelete();
-                    else setConfirmDelete(true);
-                  }}
-                >
-                  <Trash2 size={13} /> {confirmDelete ? "Confirmar" : null}
-                </Button>
-              ) : null}
-            </div>
+            ) : null}
           </div>
         </div>
       </div>
