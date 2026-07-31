@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { Download, ExternalLink, RefreshCcw, RotateCcw } from "lucide-react";
+import { AlertTriangle, Download, ExternalLink, RefreshCcw, RotateCcw } from "lucide-react";
 import type { UpdateState } from "@maestro/contracts";
 import { api } from "@renderer/lib/api";
 import { Button } from "@renderer/components/ui/button";
@@ -7,11 +7,24 @@ import { Button } from "@renderer/components/ui/button";
 export function UpdateBanner({ state }: { state: UpdateState }) {
   const download = useMutation({ mutationFn: () => api().downloadUpdate() });
   const install = useMutation({ mutationFn: () => api().installUpdate() });
-  if (!["available", "downloading", "downloaded", "installing"].includes(state.status)) return null;
+  const failedDownload = state.status === "error" && state.availableVersion !== null;
+  if (
+    !["available", "downloading", "downloaded", "installing"].includes(state.status) &&
+    !failedDownload
+  )
+    return null;
   const systemInstaller = state.installStrategy === "system-installer";
   return (
-    <div className="flex min-h-11 shrink-0 items-center gap-3 border-b border-primary/20 bg-primary/[0.075] px-4 py-1.5 text-[11px]">
-      {state.status === "downloading" ? (
+    <div
+      className={`flex min-h-11 shrink-0 items-center gap-3 border-b px-4 py-1.5 text-[11px] ${
+        failedDownload
+          ? "border-danger/25 bg-danger/[0.065]"
+          : "border-primary/20 bg-primary/[0.075]"
+      }`}
+    >
+      {failedDownload ? (
+        <AlertTriangle size={12} className="text-danger" />
+      ) : state.status === "downloading" ? (
         <RefreshCcw size={12} className="animate-spin text-primary-soft" />
       ) : state.status === "downloaded" || state.status === "installing" ? (
         systemInstaller ? (
@@ -35,6 +48,15 @@ export function UpdateBanner({ state }: { state: UpdateState }) {
       {state.status === "available" ? (
         <Button size="sm" disabled={download.isPending} onClick={() => download.mutate()}>
           <Download size={11} /> {download.isPending ? "Iniciando…" : "Baixar"}
+        </Button>
+      ) : failedDownload ? (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={download.isPending}
+          onClick={() => download.mutate()}
+        >
+          <RefreshCcw size={11} /> {download.isPending ? "Retomando…" : "Tentar novamente"}
         </Button>
       ) : state.status === "downloaded" ? (
         <Button size="sm" disabled={install.isPending} onClick={() => install.mutate()}>

@@ -7,6 +7,7 @@ import {
   isUpdateVersionAllowed,
   resolveUpdateInstallStrategy,
 } from "./update-policy.js";
+import { isTransientUpdateError, retryTransientUpdateOperation } from "./update-retry.js";
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const { autoUpdater } = electronUpdater;
@@ -16,6 +17,8 @@ export class UpdateService {
   #timer: NodeJS.Timeout | null = null;
   #initialTimer: NodeJS.Timeout | null = null;
   #downloadedUpdateFile: string | null = null;
+  #downloadPromise: Promise<UpdateState> | null = null;
+  #downloadActive = false;
   #enabled = true;
   #channel: AppSettings["updateChannel"] = "stable";
   #state: UpdateState = {
@@ -75,14 +78,17 @@ export class UpdateService {
         installStrategy: resolveUpdateInstallStrategy(process.platform, info.downloadedFile),
       });
     });
-    autoUpdater.on("error", (error) =>
+    autoUpdater.on("error", (error) => {
+      // downloadUpdate also rejects with this error. Keep the banner in its retry state and let
+      // #performDownload decide whether to retry or expose a final, actionable failure.
+      if (this.#downloadActive) return;
       this.#set({
         status: "error",
         progress: null,
         message: `Falha ao atualizar: ${errorMessage(error)}`,
         checkedAt: new Date().toISOString(),
-      }),
-    );
+      });
+    });
   }
 
   get state(): UpdateState {
@@ -138,7 +144,10 @@ export class UpdateService {
   }
 
   async download(): Promise<UpdateState> {
-    if (this.#state.status !== "available") {
+    if (this.#downloadPromise) return this.#downloadPromise;
+    const retryingFailedDownload =
+      this.#state.status === "error" && this.#state.availableVersion !== null;
+    if (this.#state.status !== "available" && !retryingFailedDownload) {
       throw new MaestroError(
         "UPDATE_NOT_AVAILABLE",
         "Nenhuma atualização está pronta para baixar.",
@@ -147,13 +156,15 @@ export class UpdateService {
         },
       );
     }
+    this.#downloadedUpdateFile = null;
     this.#set({ status: "downloading", progress: 0, message: "Iniciando download…" });
-    const downloadedFiles = await autoUpdater.downloadUpdate();
-    this.#downloadedUpdateFile =
-      downloadedFiles.find((file) => file.toLowerCase().endsWith(".deb")) ??
-      downloadedFiles[0] ??
-      this.#downloadedUpdateFile;
-    return this.state;
+    this.#downloadActive = true;
+    const operation = this.#performDownload().finally(() => {
+      this.#downloadActive = false;
+      this.#downloadPromise = null;
+    });
+    this.#downloadPromise = operation;
+    return operation;
   }
 
   async install(): Promise<void> {
@@ -217,6 +228,38 @@ export class UpdateService {
       checkedAt: new Date().toISOString(),
       installStrategy: "automatic",
     });
+  }
+
+  async #performDownload(): Promise<UpdateState> {
+    try {
+      const downloadedFiles = await retryTransientUpdateOperation(
+        () => autoUpdater.downloadUpdate(),
+        {
+          onRetry: ({ retryNumber, maxRetries, delayMs }) => {
+            const seconds = Math.max(1, Math.ceil(delayMs / 1_000));
+            this.#set({
+              status: "downloading",
+              message: `A conexão mudou. Retomando em ${seconds}s (${retryNumber}/${maxRetries})…`,
+            });
+          },
+        },
+      );
+      this.#downloadedUpdateFile =
+        downloadedFiles.find((file) => file.toLowerCase().endsWith(".deb")) ??
+        downloadedFiles[0] ??
+        this.#downloadedUpdateFile;
+    } catch (error) {
+      const transient = isTransientUpdateError(error);
+      this.#set({
+        status: "error",
+        progress: null,
+        message: transient
+          ? "A rede continuou instável. Confira a conexão e tente novamente; o download será retomado."
+          : `Falha ao atualizar: ${errorMessage(error)}`,
+        checkedAt: new Date().toISOString(),
+      });
+    }
+    return this.state;
   }
 
   #clearTimers(): void {
