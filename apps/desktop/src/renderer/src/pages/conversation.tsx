@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -14,6 +14,7 @@ import {
   FileVideo,
   Folder,
   FolderOpen,
+  Gauge,
   LockKeyhole,
   LoaderCircle,
   MessageCircle,
@@ -24,6 +25,7 @@ import {
   Shield,
   Sparkles,
   SquareTerminal,
+  Zap,
   X,
 } from "lucide-react";
 import type {
@@ -34,11 +36,12 @@ import type {
   LocalModelPackageState,
   Project,
   ProviderSummary,
+  RunEvent,
   RunMode,
   SessionKind,
   WorkspaceContextCandidate,
 } from "@maestro/contracts";
-import { api } from "@renderer/lib/api";
+import { api, getAllRunEvents } from "@renderer/lib/api";
 import { cn, RUN_LABELS, stateTone } from "@renderer/lib/utils";
 import { useAppStore } from "@renderer/store/app-store";
 import { Button } from "@renderer/components/ui/button";
@@ -55,13 +58,18 @@ import {
 import { ContextAssetTray } from "@renderer/components/conversation/context-asset-tray";
 import { AudioRecorder } from "@renderer/components/conversation/audio-recorder";
 import { PlanApprovalCard } from "@renderer/components/conversation/plan-approval";
+import { MaestroProcess } from "@renderer/components/conversation/maestro-process";
+import {
+  FastModelSwitcher,
+  type FastModelSelection,
+} from "@renderer/components/conversation/fast-model-switcher";
 import { AgentPipeline } from "@renderer/components/operations/agent-pipeline";
 
 const modes: Array<{ id: RunMode; label: string; description: string; icon: typeof Sparkles }> = [
   {
     id: "maestro",
     label: "Maestro",
-    description: "Planeja, aguarda aprovação e coordena",
+    description: "Entende com você, pesquisa, planeja e coordena",
     icon: Sparkles,
   },
   { id: "agent", label: "Agente", description: "Coding agent direto no workspace", icon: Code2 },
@@ -75,12 +83,28 @@ const modes: Array<{ id: RunMode; label: string; description: string; icon: type
 
 const MAX_COMPOSER_CONTEXT_BYTES = 4 * 1024 * 1024 * 1024;
 
+function fallbackContextWindow(providerId: string, modelId: string): number {
+  const provider = providerId.toLowerCase();
+  const model = modelId.toLowerCase();
+  if (provider.includes("gemini") || model.includes("gemini")) return 1_000_000;
+  if (provider.includes("claude") || provider.includes("anthropic") || model.includes("claude"))
+    return 200_000;
+  if (provider === "codex" || model.includes("codex") || model.includes("gpt")) return 400_000;
+  return 128_000;
+}
+
+function compactTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(value);
+}
+
 const emptyStates: Record<RunMode, { title: string; description: string; suggestions: string[] }> =
   {
     maestro: {
       title: "O que vamos construir?",
       description:
-        "Descreva o resultado. O Maestro analisa, cria um plano revisável e só altera arquivos depois da sua aprovação.",
+        "Descreva o resultado. O Maestro estuda o contexto, tira dúvidas com você, resume o entendimento e só então cria um plano revisável.",
       suggestions: [
         "Investigue e corrija os testes que falham",
         "Implemente uma melhoria completa nesta interface",
@@ -127,6 +151,7 @@ export function ConversationPage({
 }) {
   const queryClient = useQueryClient();
   const setView = useAppStore((state) => state.setView);
+  const liveEvents = useAppStore((state) => state.recentEvents);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ComposerEditorHandle>(null);
   const query = useQuery({
@@ -167,6 +192,7 @@ export function ConversationPage({
   const [localModel, setLocalModel] = useState<LocalModelPackageState | null>(null);
   const [modeMenu, setModeMenu] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [fastModelOpen, setFastModelOpen] = useState(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const stickToBottom = useRef(true);
 
@@ -176,10 +202,6 @@ export function ConversationPage({
   const selectedProvider =
     allowedProviders.find((provider) => provider.descriptor.id === providerId) ??
     allowedProviders[0];
-  const selectedModel =
-    selectedProvider?.models.find((model) => model.id === modelId) ??
-    selectedProvider?.models.find((model) => model.isDefault) ??
-    selectedProvider?.models[0];
   const availableConnections = bootstrap.providerConnections.filter(
     (item) =>
       item.connection.providerId === selectedProvider?.descriptor.id &&
@@ -189,6 +211,14 @@ export function ConversationPage({
   const selectedConnection =
     availableConnections.find((item) => item.connection.id === providerConnectionId) ??
     availableConnections[0];
+  const selectableModels =
+    selectedConnection && selectedConnection.models.length > 0
+      ? selectedConnection.models
+      : (selectedProvider?.models ?? []);
+  const selectedModel =
+    selectableModels.find((model) => model.id === modelId) ??
+    selectableModels.find((model) => model.isDefault) ??
+    selectableModels[0];
 
   contextAssetsRef.current = contextAssets;
 
@@ -384,6 +414,45 @@ export function ConversationPage({
     refetchInterval:
       latestRun && !["completed", "failed", "canceled"].includes(latestRun.state) ? 2_000 : false,
   });
+  const runEventsQuery = useQuery({
+    queryKey: ["run-events", latestRun?.id],
+    queryFn: () => getAllRunEvents(latestRun!.id),
+    enabled: Boolean(latestRun),
+    refetchInterval:
+      latestRun && !["completed", "failed", "canceled"].includes(latestRun.state) ? 3_000 : false,
+  });
+  const processEvents = useMemo(() => {
+    if (!latestRun) return [];
+    const byId = new Map<string, RunEvent>();
+    for (const event of runEventsQuery.data?.events ?? []) byId.set(event.id, event);
+    for (const event of liveEvents) {
+      if (event.runId === latestRun.id) byId.set(event.id, event);
+    }
+    return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+  }, [latestRun?.id, liveEvents, runEventsQuery.data?.events]);
+  const awaitingClarification = runQuery.data?.run.state === "awaiting_clarification";
+  const modelSelectionLocked = Boolean(
+    awaitingClarification || detail?.messages.some((message) => message.status === "streaming"),
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key.toLowerCase() !== "m" ||
+        !event.shiftKey ||
+        (!event.ctrlKey && !event.metaKey) ||
+        sessionKind !== "structured" ||
+        modelSelectionLocked
+      )
+        return;
+      event.preventDefault();
+      setFastModelOpen((value) => !value);
+      setConfigurationOpen(false);
+      setModeMenu(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [modelSelectionLocked, sessionKind]);
 
   const send = useMutation({
     mutationFn: async () => {
@@ -396,13 +465,15 @@ export function ConversationPage({
       return api().sendMessage({
         conversationId: id,
         content: content.trim(),
-        mode,
+        mode: awaitingClarification ? "maestro" : mode,
         sessionKind,
         providerId: selectedProvider.descriptor.id,
         ...(selectedConnection ? { providerConnectionId: selectedConnection.connection.id } : {}),
         modelId: selectedModel.id,
         effort,
-        workspaceRootId,
+        workspaceRootId: awaitingClarification
+          ? runQuery.data!.run.spec.workspaceRootIds[0]!
+          : workspaceRootId,
         contextItems: contextAssets.map((asset) => ({ type: "asset" as const, assetId: asset.id })),
       });
     },
@@ -414,7 +485,9 @@ export function ConversationPage({
               ...current,
               conversation: value.conversation,
               messages: [...current.messages, value.userMessage, value.assistantMessage],
-              runs: value.run ? [value.run, ...current.runs] : current.runs,
+              runs: value.run
+                ? [value.run, ...current.runs.filter((run) => run.id !== value.run?.id)]
+                : current.runs,
             }
           : current,
       );
@@ -492,6 +565,53 @@ export function ConversationPage({
         selectedModel &&
         (selectedProvider.descriptor.kind !== "cli" || selectedConnection))),
   );
+  const currentFastSelection: FastModelSelection | null =
+    selectedProvider && selectedModel
+      ? {
+          providerId: selectedProvider.descriptor.id,
+          modelId: selectedModel.id,
+          ...(selectedConnection ? { connectionId: selectedConnection.connection.id } : {}),
+        }
+      : null;
+  const modelContextWindow =
+    selectedProvider && selectedModel
+      ? (selectedModel.capabilities.contextWindow ??
+        fallbackContextWindow(selectedProvider.descriptor.id, selectedModel.id))
+      : 128_000;
+  const estimatedConversationTokens = Math.ceil(
+    (detail.messages.reduce((total, message) => total + message.content.length, 0) +
+      content.length +
+      contextAssets.reduce((total, asset) => total + (asset.transcription?.length ?? 0), 0)) /
+      4,
+  );
+  const contextReserve = Math.min(16_000, Math.max(256, Math.floor(modelContextWindow * 0.15)));
+  const usableContextTokens = Math.max(1, modelContextWindow - contextReserve);
+  const contextUsagePercent = Math.min(
+    100,
+    Math.round((estimatedConversationTokens / usableContextTokens) * 100),
+  );
+  const pendingModelSwitch = Boolean(
+    detail.messages.some((message) => message.status === "completed") &&
+    selectedProvider &&
+    selectedModel &&
+    detail.conversation.providerId &&
+    detail.conversation.modelId &&
+    (detail.conversation.providerId !== selectedProvider.descriptor.id ||
+      detail.conversation.providerConnectionId !== (selectedConnection?.connection.id ?? null) ||
+      detail.conversation.modelId !== selectedModel.id),
+  );
+  const persistedProvider = bootstrap.providers.find(
+    (provider) => provider.descriptor.id === detail.conversation.providerId,
+  );
+  const persistedModel = persistedProvider?.models.find(
+    (model) => model.id === detail.conversation.modelId,
+  );
+  const optimizationLabel =
+    bootstrap.settings.tokenOptimizationMode === "balanced"
+      ? "balanceada"
+      : bootstrap.settings.tokenOptimizationMode === "aggressive"
+        ? "agressiva"
+        : "desativada";
 
   return (
     <div className="page-enter flex h-full min-w-0 flex-col bg-bg/45">
@@ -520,7 +640,15 @@ export function ConversationPage({
         {latestRun && !["completed", "failed", "canceled"].includes(latestRun.state) ? (
           <button
             className="flex items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 transition-colors hover:border-border-strong hover:bg-surface-hover"
-            onClick={() => setView({ type: "run", id: latestRun.id })}
+            onClick={() => {
+              if (latestRun.state === "awaiting_clarification") {
+                const element = scrollRef.current;
+                if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+                window.requestAnimationFrame(() => composerRef.current?.focus());
+                return;
+              }
+              setView({ type: "run", id: latestRun.id });
+            }}
           >
             <span className="size-1.5 animate-pulse rounded-full bg-info" />
             <span className="text-[11px] font-medium text-text-muted">
@@ -569,6 +697,19 @@ export function ConversationPage({
           ) : (
             <MessageList messages={detail.messages} />
           )}
+
+          {runQuery.data?.run.mode === "maestro" ? (
+            <MaestroProcess
+              detail={runQuery.data}
+              events={processEvents}
+              onUseAnswer={(answer) => {
+                setContent((current) =>
+                  current.trim() ? `${current.trim()}\n\n${answer}` : answer,
+                );
+                window.requestAnimationFrame(() => composerRef.current?.focus());
+              }}
+            />
+          ) : null}
 
           {runQuery.data?.run.state === "awaiting_approval" ? (
             <div className="mt-6">
@@ -627,7 +768,14 @@ export function ConversationPage({
                 onClick={() => {
                   setModeMenu((value) => !value);
                   setConfigurationOpen(false);
+                  setFastModelOpen(false);
                 }}
+                disabled={awaitingClarification}
+                title={
+                  awaitingClarification
+                    ? "Responda às dúvidas antes de trocar o modo desta conversa."
+                    : undefined
+                }
                 aria-label={`Modo atual: ${activeMode.label}`}
                 aria-expanded={modeMenu}
               >
@@ -665,6 +813,7 @@ export function ConversationPage({
                           setMode(item.id);
                           setSessionKind("structured");
                           setModeMenu(false);
+                          setFastModelOpen(false);
                         }}
                       >
                         <div className="mt-0.5 grid size-8 place-items-center rounded-[8px] border border-border bg-bg-elevated text-text-muted">
@@ -689,15 +838,19 @@ export function ConversationPage({
             <button
               className={cn(
                 "flex h-9 min-w-0 items-center gap-2 rounded-[9px] border bg-surface px-3 text-[10px] text-text-muted transition-colors hover:border-border-strong hover:bg-surface-hover hover:text-text",
-                configurationOpen ? "border-primary/40 bg-primary/[0.06]" : "border-border",
+                fastModelOpen ? "border-primary/40 bg-primary/[0.06]" : "border-border",
               )}
               onClick={() => {
-                setConfigurationOpen((value) => !value);
+                setFastModelOpen(true);
+                setConfigurationOpen(false);
                 setModeMenu(false);
               }}
-              aria-expanded={configurationOpen}
+              disabled={sessionKind !== "structured" || modelSelectionLocked}
+              title="Troca rápida de modelo · Ctrl/Cmd + Shift + M"
+              aria-label={`Troca rápida de modelo${selectedModel ? `: ${selectedModel.name}` : ""}`}
+              aria-expanded={fastModelOpen}
             >
-              <Settings2 size={12} />
+              <Zap size={12} className="text-primary-soft" />
               <span className="max-w-72 truncate">
                 {sessionKind === "pty"
                   ? "Terminal interativo"
@@ -709,10 +862,20 @@ export function ConversationPage({
                 size={11}
                 className={cn(
                   "text-text-faint transition-transform",
-                  configurationOpen && "rotate-180",
+                  fastModelOpen && "rotate-180",
                 )}
               />
             </button>
+
+            <div
+              className="hidden h-9 items-center gap-2 rounded-[9px] border border-border/75 bg-bg-elevated/70 px-3 text-[9.5px] text-text-faint md:flex"
+              title={`Estimativa local: ${estimatedConversationTokens.toLocaleString("pt-BR")} tokens de conversa, ${contextUsagePercent}% da janela útil. Otimização ${optimizationLabel}.`}
+            >
+              <Gauge size={11} />
+              <span>~{compactTokenCount(estimatedConversationTokens)}</span>
+              <span className="text-border-strong">·</span>
+              <span>{optimizationLabel}</span>
+            </div>
 
             <div className="ml-auto flex h-9 items-center gap-2 rounded-[9px] border border-border/75 bg-bg-elevated/70 px-3 text-[10px] text-text-faint">
               {mode === "chat" ? <LockKeyhole size={11} /> : <Shield size={11} />}
@@ -860,7 +1023,7 @@ export function ConversationPage({
                           onChange={(event) => setModelId(event.target.value)}
                           aria-label="Modelo"
                         >
-                          {(selectedProvider?.models ?? []).map((model) => (
+                          {selectableModels.map((model) => (
                             <option key={model.id} value={model.id}>
                               {model.name}
                             </option>
@@ -897,6 +1060,29 @@ export function ConversationPage({
               </section>
             ) : null}
           </div>
+
+          {pendingModelSwitch && selectedProvider && selectedModel ? (
+            <button
+              type="button"
+              className="mb-2 flex w-full items-center gap-2.5 rounded-[10px] border border-primary/20 bg-primary/[0.055] px-3 py-2 text-left"
+              onClick={() => setFastModelOpen(true)}
+              aria-label="Revisar troca de modelo preparada"
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-[8px] bg-primary/10 text-primary-soft">
+                <Zap size={12} />
+              </span>
+              <span className="min-w-0 flex-1 text-[10px] leading-4 text-text-muted">
+                <strong className="font-semibold text-text">Troca preparada:</strong>{" "}
+                {persistedProvider?.descriptor.name ?? detail.conversation.providerId}/
+                {persistedModel?.name ?? detail.conversation.modelId} →{" "}
+                {selectedProvider.descriptor.name}/{selectedModel.name}. Na próxima mensagem,
+                decisões, progresso e referências seguem em um handoff local.
+              </span>
+              <span className="hidden rounded-full border border-primary/20 px-2 py-1 text-[8px] font-semibold uppercase tracking-wide text-primary-soft sm:inline">
+                fast-switch
+              </span>
+            </button>
+          ) : null}
 
           <div
             className={cn("composer-card relative p-2", dropActive && "is-drop-active")}
@@ -953,11 +1139,13 @@ export function ConversationPage({
               placeholder={
                 sessionKind === "pty"
                   ? "Abra um terminal completo nesta raiz…"
-                  : mode === "maestro"
-                    ? "Descreva o resultado que você quer…"
-                    : mode === "agent"
-                      ? "Peça uma alteração direta no workspace…"
-                      : "Escreva uma mensagem… use @ para mencionar arquivos"
+                  : awaitingClarification
+                    ? "Responda às dúvidas do Maestro…"
+                    : mode === "maestro"
+                      ? "Descreva o resultado que você quer…"
+                      : mode === "agent"
+                        ? "Peça uma alteração direta no workspace…"
+                        : "Escreva uma mensagem… use @ para mencionar arquivos"
               }
             />
             <div className="flex items-center gap-1 px-1 pt-1">
@@ -1008,6 +1196,7 @@ export function ConversationPage({
                 onClick={() => {
                   setConfigurationOpen((value) => !value);
                   setModeMenu(false);
+                  setFastModelOpen(false);
                 }}
               >
                 <Settings2 size={14} />
@@ -1022,7 +1211,13 @@ export function ConversationPage({
                 onClick={() => send.mutate()}
               >
                 {sessionKind === "pty" ? <SquareTerminal size={14} /> : <Send size={14} />}
-                {send.isPending ? "Enviando…" : sessionKind === "pty" ? "Abrir terminal" : "Enviar"}
+                {send.isPending
+                  ? "Enviando…"
+                  : sessionKind === "pty"
+                    ? "Abrir terminal"
+                    : awaitingClarification
+                      ? "Responder"
+                      : "Enviar"}
               </Button>
             </div>
           </div>
@@ -1088,6 +1283,36 @@ export function ConversationPage({
           ) : null}
         </div>
       </footer>
+      <FastModelSwitcher
+        open={fastModelOpen}
+        mode={mode}
+        providers={allowedProviders}
+        connections={bootstrap.providerConnections}
+        current={currentFastSelection}
+        onClose={() => setFastModelOpen(false)}
+        onSelect={(selection) => {
+          const provider = allowedProviders.find(
+            (candidate) => candidate.descriptor.id === selection.providerId,
+          );
+          const account = selection.connectionId
+            ? bootstrap.providerConnections.find(
+                (candidate) => candidate.connection.id === selection.connectionId,
+              )
+            : null;
+          const model = (account?.models.length ? account.models : provider?.models)?.find(
+            (candidate) => candidate.id === selection.modelId,
+          );
+          setProviderId(selection.providerId);
+          setProviderConnectionId(selection.connectionId ?? "");
+          setModelId(selection.modelId);
+          const efforts = model?.capabilities.reasoningEffort ?? [];
+          if (efforts.length > 0 && !efforts.includes(effort))
+            setEffort(efforts.includes("medium") ? "medium" : efforts[0]!);
+          setFastModelOpen(false);
+          setConfigurationOpen(false);
+          setModeMenu(false);
+        }}
+      />
     </div>
   );
 }

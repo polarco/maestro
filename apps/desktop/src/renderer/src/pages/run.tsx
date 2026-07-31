@@ -9,12 +9,13 @@ import {
   FileCode2,
   GitBranch,
   ListTree,
+  MessageCircleQuestion,
   ScrollText,
   ShieldCheck,
   Users,
 } from "lucide-react";
 import type { BootstrapPayload, RunEvent } from "@maestro/contracts";
-import { api } from "@renderer/lib/api";
+import { api, getAllRunEvents } from "@renderer/lib/api";
 import { compactPath, relativeTime, RUN_LABELS, stateTone } from "@renderer/lib/utils";
 import { useAppStore } from "@renderer/store/app-store";
 import { AgentPipeline } from "@renderer/components/operations/agent-pipeline";
@@ -46,7 +47,7 @@ export function RunPage({ id, bootstrap }: { id: string; bootstrap: BootstrapPay
   });
   const eventsQuery = useQuery({
     queryKey: ["run-events", id],
-    queryFn: () => api().getRunEvents(id, undefined, 2_000),
+    queryFn: () => getAllRunEvents(id),
     refetchInterval: query.data && !terminalStates.has(query.data.run.state) ? 4_000 : false,
   });
   const events = useMemo(() => {
@@ -129,6 +130,27 @@ export function RunPage({ id, bootstrap }: { id: string; bootstrap: BootstrapPay
       <div className="shrink-0 border-b border-border bg-surface/30 px-5 py-4 md:px-6">
         <AgentPipeline state={run.state} />
       </div>
+
+      {run.state === "awaiting_clarification" ? (
+        <div className="flex shrink-0 items-center gap-3 border-b border-warning/20 bg-warning/[0.05] px-5 py-3 md:px-6">
+          <MessageCircleQuestion size={15} className="shrink-0 text-warning" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold text-text">
+              O Maestro pausou para decidir com você
+            </div>
+            <div className="mt-0.5 text-[10px] text-text-muted">
+              As perguntas e o entendimento estão no chat. Nenhum plano ou arquivo foi criado.
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setView({ type: "conversation", id: run.conversationId })}
+          >
+            Responder no chat
+          </Button>
+        </div>
+      ) : null}
 
       {cancel.error ? (
         <div

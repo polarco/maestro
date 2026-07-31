@@ -3,7 +3,10 @@ import { assertRunTransition, canTransitionRun, isTerminalRunState } from "../sr
 
 describe("run state machine", () => {
   it("follows the approval lifecycle", () => {
-    expect(canTransitionRun("analyzing", "planning")).toBe(true);
+    expect(canTransitionRun("discovering", "awaiting_clarification")).toBe(true);
+    expect(canTransitionRun("awaiting_clarification", "discovering")).toBe(true);
+    expect(canTransitionRun("discovering", "researching")).toBe(true);
+    expect(canTransitionRun("researching", "planning")).toBe(true);
     expect(canTransitionRun("planning", "awaiting_approval")).toBe(true);
     expect(canTransitionRun("awaiting_approval", "queued")).toBe(true);
     expect(canTransitionRun("queued", "running")).toBe(true);
@@ -12,6 +15,8 @@ describe("run state machine", () => {
   });
 
   it("blocks writes lifecycle jumps and terminal transitions", () => {
+    expect(() => assertRunTransition("discovering", "running")).toThrow("Transição inválida");
+    expect(canTransitionRun("awaiting_clarification", "queued")).toBe(false);
     expect(() => assertRunTransition("planning", "running")).toThrow("Transição inválida");
     expect(canTransitionRun("completed", "running")).toBe(false);
     expect(isTerminalRunState("canceled")).toBe(true);

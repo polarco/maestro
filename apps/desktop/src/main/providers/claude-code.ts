@@ -61,7 +61,7 @@ function model(id: string, name: string, isDefault = false): ProviderModel {
       vision: true,
       reasoningEffort: CLAUDE_EFFORTS,
       structuredOutput: true,
-      contextWindow: null,
+      contextWindow: 200_000,
     },
   };
 }

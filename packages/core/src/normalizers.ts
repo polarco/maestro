@@ -59,7 +59,7 @@ export function normalizeCodexEvent(raw: unknown, context: NormalizeContext): Ne
       {
         runId: context.runId,
         type: "message.delta",
-        data: { messageId: context.agentId, role: "assistant", delta },
+        data: withTask(context, { messageId: context.agentId, role: "assistant", delta }),
       },
     ];
   }
@@ -129,7 +129,11 @@ export function normalizeCodexEvent(raw: unknown, context: NormalizeContext): Ne
         {
           runId: context.runId,
           type: "message.completed",
-          data: { messageId: context.agentId, role: "assistant", content },
+          data: withTask(context, {
+            messageId: context.agentId,
+            role: "assistant",
+            content,
+          }),
         },
       ];
     }
@@ -240,7 +244,11 @@ export function normalizeClaudeEvent(raw: unknown, context: NormalizeContext): N
         {
           runId: context.runId,
           type: "message.delta",
-          data: { messageId: context.agentId, role: "assistant", delta: textDelta },
+          data: withTask(context, {
+            messageId: context.agentId,
+            role: "assistant",
+            delta: textDelta,
+          }),
         },
       ];
     }
@@ -260,7 +268,11 @@ export function normalizeClaudeEvent(raw: unknown, context: NormalizeContext): N
           events.push({
             runId: context.runId,
             type: "message.delta",
-            data: { messageId: context.agentId, role: "assistant", delta: text },
+            data: withTask(context, {
+              messageId: context.agentId,
+              role: "assistant",
+              delta: text,
+            }),
           });
       }
       // Thinking blocks are deliberately ignored: raw chain-of-thought is never persisted.
@@ -309,7 +321,11 @@ export function normalizeClaudeEvent(raw: unknown, context: NormalizeContext): N
       events.push({
         runId: context.runId,
         type: "message.completed",
-        data: { messageId: context.agentId, role: "assistant", content: result },
+        data: withTask(context, {
+          messageId: context.agentId,
+          role: "assistant",
+          content: result,
+        }),
       });
     }
     events.push({

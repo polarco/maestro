@@ -12,7 +12,13 @@ export type SessionKind = z.infer<typeof sessionKindSchema>;
 export const effortSchema = z.enum(["none", "low", "medium", "high", "xhigh", "max"]);
 export type Effort = z.infer<typeof effortSchema>;
 
+export const tokenOptimizationModeSchema = z.enum(["off", "balanced", "aggressive"]);
+export type TokenOptimizationMode = z.infer<typeof tokenOptimizationModeSchema>;
+
 export const runStateSchema = z.enum([
+  "discovering",
+  "awaiting_clarification",
+  "researching",
   "analyzing",
   "planning",
   "awaiting_approval",
@@ -289,6 +295,47 @@ export const analysisResultSchema = z.object({
 });
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;
 
+export const maestroQuestionSchema = z.object({
+  id: entityIdSchema,
+  question: z.string().min(1),
+  reason: z.string().min(1),
+  options: z.array(z.string().min(1)).max(5).default([]),
+});
+export type MaestroQuestion = z.infer<typeof maestroQuestionSchema>;
+
+export const maestroDiscoverySchema = z.object({
+  understanding: z.string().min(1),
+  desiredOutcome: z.string().min(1),
+  deliverable: z.string().min(1),
+  audience: z.string().min(1),
+  constraints: z.array(z.string().min(1)).default([]),
+  assumptions: z.array(z.string().min(1)).default([]),
+  requiredCapabilities: z.array(z.string().min(1)).default([]),
+  researchTopics: z.array(z.string().min(1)).default([]),
+  questions: z.array(maestroQuestionSchema).default([]),
+});
+export type MaestroDiscovery = z.infer<typeof maestroDiscoverySchema>;
+
+export const maestroResearchFindingSchema = z.object({
+  title: z.string().min(1),
+  detail: z.string().min(1),
+  source: z.string().min(1),
+});
+export type MaestroResearchFinding = z.infer<typeof maestroResearchFindingSchema>;
+
+export const maestroBriefSchema = z.object({
+  summary: z.string().min(1),
+  deliverable: z.string().min(1),
+  userDecisions: z.array(z.string().min(1)).default([]),
+  findings: z.array(maestroResearchFindingSchema).default([]),
+  scope: z.array(z.string().min(1)).min(1),
+  outOfScope: z.array(z.string().min(1)).default([]),
+  successCriteria: z.array(z.string().min(1)).min(1),
+  remainingRisks: z.array(z.string().min(1)).default([]),
+  researchLimits: z.array(z.string().min(1)).default([]),
+});
+export type MaestroBrief = z.infer<typeof maestroBriefSchema>;
+
 export const runSpecSchema = z.object({
   id: entityIdSchema,
   mode: runModeSchema,
@@ -297,6 +344,8 @@ export const runSpecSchema = z.object({
   workspaceRootIds: z.array(entityIdSchema).min(1),
   prompt: z.string().min(1),
   contextAssetIds: z.array(entityIdSchema).default([]),
+  /** Compact continuity brief generated locally when a conversation changes models. */
+  contextHandoff: z.string().min(1).nullable().optional(),
   requestedModel: modelSelectionSchema.nullable(),
   roleModels: z.record(z.string(), modelSelectionSchema).default({}),
   permissions: permissionSpecSchema,
@@ -357,6 +406,7 @@ const appSettingsFields = {
   autoUpdateEnabled: z.boolean(),
   updateChannel: z.enum(["stable", "beta"]),
   telemetryEnabled: z.boolean(),
+  tokenOptimizationMode: tokenOptimizationModeSchema,
   defaultMode: runModeSchema,
   defaultModels: z.record(z.string(), modelSelectionSchema),
 };
@@ -369,6 +419,7 @@ export const appSettingsSchema = z.object({
   autoUpdateEnabled: appSettingsFields.autoUpdateEnabled.default(true),
   updateChannel: appSettingsFields.updateChannel.default("stable"),
   telemetryEnabled: appSettingsFields.telemetryEnabled.default(false),
+  tokenOptimizationMode: appSettingsFields.tokenOptimizationMode.default("balanced"),
   defaultMode: appSettingsFields.defaultMode.default("maestro"),
   defaultModels: appSettingsFields.defaultModels.default({}),
 });
@@ -384,6 +435,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoUpdateEnabled: true,
   updateChannel: "stable",
   telemetryEnabled: false,
+  tokenOptimizationMode: "balanced",
   defaultMode: "maestro",
   defaultModels: {
     maestro: { providerId: "anthropic", modelId: "claude-fable-5", effort: "high" },

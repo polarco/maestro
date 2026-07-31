@@ -7,7 +7,7 @@ import type {
   ProviderHealth,
   ProviderModel,
 } from "@maestro/contracts";
-import { MaestroError } from "@maestro/core";
+import { MaestroError, resolveModelContextWindow } from "@maestro/core";
 import { ApiProviderAdapter } from "./api-base.js";
 import { consumeSse, responseError } from "./sse.js";
 import { configString } from "./types.js";
@@ -119,7 +119,7 @@ export class AnthropicApiAdapter extends ApiProviderAdapter {
           vision: true,
           reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
           structuredOutput: true,
-          contextWindow: null,
+          contextWindow: resolveModelContextWindow("anthropic", model, null),
         },
       },
     ];

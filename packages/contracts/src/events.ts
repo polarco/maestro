@@ -1,13 +1,33 @@
-import type { AnalysisResult, PlanSpec, RunState, TaskState, ModelSelection } from "./domain.js";
+import type {
+  AnalysisResult,
+  MaestroBrief,
+  MaestroDiscovery,
+  MaestroQuestion,
+  MaestroResearchFinding,
+  ModelSelection,
+  PlanSpec,
+  RunState,
+  TaskState,
+} from "./domain.js";
 
 export type RunEventType =
   | "run.created"
   | "run.state"
+  | "discovery.started"
+  | "workspace.inspected"
+  | "discovery.completed"
+  | "clarification.requested"
+  | "clarification.answered"
+  | "research.started"
+  | "research.finding"
+  | "brief.created"
   | "analysis.completed"
   | "route.selected"
   | "plan.created"
   | "plan.approved"
   | "plan.revision_requested"
+  | "agents.dispatched"
+  | "execution.summary"
   | "message.delta"
   | "message.completed"
   | "agent.started"
@@ -28,13 +48,49 @@ export type RunEventType =
 export interface EventDataMap {
   "run.created": { mode: string; promptPreview: string };
   "run.state": { from: RunState | null; to: RunState; reason?: string };
+  "discovery.started": { round: number; message: string };
+  "workspace.inspected": {
+    files: number;
+    directories: number;
+    sources: string[];
+    observations: string[];
+    truncated: boolean;
+  };
+  "discovery.completed": { round: number; discovery: MaestroDiscovery };
+  "clarification.requested": { round: number; questions: MaestroQuestion[] };
+  "clarification.answered": { round: number; answer: string; contextAssetIds: string[] };
+  "research.started": { topics: string[]; scope: "workspace-and-context" };
+  "research.finding": { finding: MaestroResearchFinding };
+  "brief.created": { brief: MaestroBrief };
   "analysis.completed": { analysis: AnalysisResult };
   "route.selected": { role: string; selection: ModelSelection; rationale: string };
   "plan.created": { plan: PlanSpec; markdown: string };
   "plan.approved": { version: number; approvedBy: "user" };
   "plan.revision_requested": { version: number; comment: string };
-  "message.delta": { messageId: string; role: "assistant"; delta: string };
-  "message.completed": { messageId: string; role: "assistant"; content: string };
+  "agents.dispatched": {
+    planVersion: number;
+    agents: Array<{
+      taskId: string;
+      title: string;
+      role: string;
+      providerId: string;
+      modelId: string;
+    }>;
+  };
+  "execution.summary": {
+    outcome: "completed" | "failed" | "canceled";
+    summary: string;
+    completedTasks: number;
+    totalTasks: number;
+    changedFiles: string[];
+  };
+  "message.delta": { messageId: string; taskId?: string; role: "assistant"; delta: string };
+  "message.completed": {
+    messageId: string;
+    taskId?: string;
+    role: "assistant";
+    content: string;
+  };
   "agent.started": {
     agentId: string;
     taskId?: string;

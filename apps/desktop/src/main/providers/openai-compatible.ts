@@ -6,7 +6,7 @@ import type {
   ProviderHealth,
   ProviderModel,
 } from "@maestro/contracts";
-import { MaestroError } from "@maestro/core";
+import { MaestroError, resolveModelContextWindow } from "@maestro/core";
 import { ApiProviderAdapter } from "./api-base.js";
 import { consumeSse, responseError } from "./sse.js";
 import { configString } from "./types.js";
@@ -94,7 +94,7 @@ export class OpenAiCompatibleAdapter extends ApiProviderAdapter {
           vision: false,
           reasoningEffort: [],
           structuredOutput: config.structuredOutput !== false,
-          contextWindow: null,
+          contextWindow: resolveModelContextWindow("openai-compatible", model, null),
         },
       },
     ];

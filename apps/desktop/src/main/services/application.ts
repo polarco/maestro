@@ -53,6 +53,9 @@ interface Grant {
 }
 
 const ACTIVE_RUN_STATES = [
+  "discovering",
+  "awaiting_clarification",
+  "researching",
   "analyzing",
   "planning",
   "awaiting_approval",

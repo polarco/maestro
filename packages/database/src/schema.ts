@@ -186,6 +186,9 @@ export const runs = sqliteTable(
     mode: text("mode", { enum: ["maestro", "agent", "chat"] }).notNull(),
     state: text("state", {
       enum: [
+        "discovering",
+        "awaiting_clarification",
+        "researching",
         "analyzing",
         "planning",
         "awaiting_approval",

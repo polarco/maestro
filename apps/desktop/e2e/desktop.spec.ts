@@ -16,6 +16,81 @@ const desktopDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url
 function structuredResponse(body: Record<string, unknown>): string {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const combined = JSON.stringify(messages);
+  if (combined.includes("descoberta colaborativa do Maestro")) {
+    const deliverableAligned = combined.includes("Mudança no produto existente");
+    const surfaceAligned = combined.includes("Na conversa principal");
+    const persistenceAligned = combined.includes("Persistir após reiniciar");
+    const approvalAligned = combined.includes("Somente após aprovação");
+    const questions = !deliverableAligned
+      ? [
+          {
+            id: "deliverable",
+            question: "Qual deve ser a entrega real deste cenário?",
+            reason: "A resposta impede que o formato seja decidido sem o usuário.",
+            options: ["Mudança no produto existente", "Protótipo visual"],
+          },
+        ]
+      : !surfaceAligned
+        ? [
+            {
+              id: "surface",
+              question: "Onde o acompanhamento deve aparecer?",
+              reason: "A superfície muda a experiência e a arquitetura da solução.",
+              options: ["Na conversa principal", "Em uma tela separada"],
+            },
+          ]
+        : !persistenceAligned
+          ? [
+              {
+                id: "persistence",
+                question: "O histórico dos agentes deve sobreviver ao reinício?",
+                reason: "Isso define se as mensagens precisam ser persistidas.",
+                options: ["Persistir após reiniciar", "Somente durante a execução"],
+              },
+            ]
+          : !approvalAligned
+            ? [
+                {
+                  id: "approval",
+                  question: "Quando os agentes podem começar a editar?",
+                  reason: "Essa decisão controla a barreira de segurança do fluxo.",
+                  options: ["Somente após aprovação", "Assim que o brief estiver pronto"],
+                },
+              ]
+            : [];
+    return JSON.stringify({
+      understanding: "O usuário quer validar o fluxo colaborativo do Maestro no produto real.",
+      desiredOutcome: "Concluir o cenário E2E sem trocar a entrega por uma demonstração.",
+      deliverable: approvalAligned
+        ? "Mudança funcional no produto existente"
+        : "Decisões da entrega ainda em alinhamento",
+      audience: "Usuários do Maestro",
+      constraints: ["Preservar o arquivo sentinela."],
+      assumptions: [],
+      requiredCapabilities: ["pesquisa no workspace", "implementação", "validação"],
+      researchTopics: ["estrutura do workspace", "fluxo do Maestro"],
+      questions,
+    });
+  }
+  if (combined.includes("etapa de pesquisa e síntese do Maestro")) {
+    return JSON.stringify({
+      summary: "Validar no produto real o fluxo colaborativo e auditável do Maestro.",
+      deliverable: "Mudança funcional no produto existente",
+      userDecisions: ["Não substituir a entrega por um protótipo."],
+      findings: [
+        {
+          title: "Workspace isolado",
+          detail: "O arquivo sentinela delimita o cenário sem alterações de produto.",
+          source: "sentinel.txt",
+        },
+      ],
+      scope: ["Executar e validar a fixture local."],
+      outOfScope: ["Publicação externa."],
+      successCriteria: ["O cenário conclui e preserva o arquivo sentinela."],
+      remainingRisks: [],
+      researchLimits: ["A pesquisa está limitada ao workspace e ao contexto fornecido."],
+    });
+  }
   if (combined.includes("analista do Maestro")) {
     return JSON.stringify({
       objective: "Validar o fluxo E2E do Maestro",
@@ -83,7 +158,10 @@ async function startApiFixture(): Promise<{ server: Server; url: string }> {
   return { server, url: `http://127.0.0.1:${address.port}/v1` };
 }
 
-async function waitForRun(page: Page, state: "awaiting_approval" | "completed"): Promise<string> {
+async function waitForRun(
+  page: Page,
+  state: "awaiting_clarification" | "awaiting_approval" | "completed",
+): Promise<string> {
   return page.evaluate(async (target) => {
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
@@ -121,16 +199,25 @@ const args = process.argv.slice(2);
 const command = args[0] === "-c" ? args.slice(2) : args;
 if (command[0] === "--version") process.stdout.write("codex-cli 0.0.0-e2e\\n");
 else if (command[0] === "login" && command[1] === "status") process.stdout.write("Logged in using ChatGPT\\n");
-else if (command[0] === "debug") process.stdout.write(JSON.stringify({ models: [{ slug: "fixture", display_name: "Fixture Codex", isDefault: true, supported_reasoning_levels: [{ effort: "medium" }] }] }));
+else if (command[0] === "debug") process.stdout.write(JSON.stringify({ models: [
+  { slug: "fixture", display_name: "Fixture Codex", isDefault: true, context_window: 128000, supported_reasoning_levels: [{ effort: "medium" }] },
+  { slug: "fixture-fast", display_name: "Fixture Codex Fast", context_window: 64000, supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] }
+] }));
 else if (command[0] === "exec") {
   const prompt = command.at(-1) || "";
-  const answer = prompt.includes("conteúdo anexado E2E")
+  const answer = prompt.includes("Continue no modelo rápido") && prompt.includes("<context_handoff")
+    ? "Fast-switch com contexto recebido."
+    : prompt.includes("conteúdo anexado E2E")
     ? "Contexto anexado recebido."
     : prompt.includes("Diga olá")
       ? "Olá do chat E2E."
       : "Direct agent fixture complete.";
+  const answers = prompt.includes("Brief consolidado e aprovado:")
+    ? ["Agente fixture: contexto recebido.", "Agente fixture: tarefa concluída."]
+    : [answer];
   process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "e2e-thread" }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "answer", type: "agent_message", text: answer } }) + "\\n");
+  for (const [index, text] of answers.entries())
+    process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "answer-" + index, type: "agent_message", text } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 4 } }) + "\\n");
 } else process.exitCode = 1;
 `,
@@ -174,6 +261,7 @@ else if (command[0] === "exec") {
         await window.maestro.updateSettings({
           defaultMode: "maestro",
           defaultModels: {
+            maestro: { providerId: "openai-compatible", modelId: "fixture-chat", effort: "medium" },
             analyst: { providerId: "openai-compatible", modelId: "fixture-chat", effort: "medium" },
             planner: { providerId: "codex", modelId: "fixture", effort: "medium" },
             implementer: { providerId: "codex", modelId: "fixture", effort: "medium" },
@@ -226,7 +314,41 @@ else if (command[0] === "exec") {
     await expect(maestroComposer).toBeFocused();
     await maestroComposer.fill("Execute o fluxo Maestro E2E");
     await page.getByRole("button", { name: "Enviar" }).click();
-    const runId = await waitForRun(page, "awaiting_approval");
+    const runId = await waitForRun(page, "awaiting_clarification");
+    await expect(page.getByText("Preciso alinhar com você")).toBeVisible();
+    await expect(
+      page.getByText("Qual deve ser a entrega real deste cenário?", { exact: true }).first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Mudança no produto existente", exact: true }).click();
+    const clarificationComposer = page.getByPlaceholder("Responda às dúvidas do Maestro…");
+    await expect(clarificationComposer).toContainText("Mudança no produto existente");
+    await page.getByRole("button", { name: "Responder", exact: true }).click();
+
+    await expect(
+      page.getByText("Onde o acompanhamento deve aparecer?", { exact: true }).first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Na conversa principal", exact: true }).click();
+    await page.getByRole("button", { name: "Responder", exact: true }).click();
+
+    await expect(
+      page
+        .getByText("O histórico dos agentes deve sobreviver ao reinício?", { exact: true })
+        .first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Persistir após reiniciar", exact: true }).click();
+    await page.getByRole("button", { name: "Responder", exact: true }).click();
+
+    await expect(
+      page.getByText("Quando os agentes podem começar a editar?", { exact: true }).first(),
+    ).toBeVisible();
+    await expect(page.getByText("Rodada 4 · conforme necessário", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Somente após aprovação", exact: true }).click();
+    await page.getByRole("button", { name: "Responder", exact: true }).click();
+
+    expect(await waitForRun(page, "awaiting_approval")).toBe(runId);
+    await expect(page.getByText("Workspace estudado").first()).toBeVisible();
+    await expect(page.getByText("Brief consolidado").first()).toBeVisible();
+    await expect(page.getByText("Mudança funcional no produto existente").first()).toBeVisible();
     await expect(page.getByText("Aprovação necessária")).toBeVisible();
     await expect(page.getByText("Nenhum arquivo foi alterado até aqui")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("maestro-plan.png"), fullPage: true });
@@ -235,6 +357,27 @@ else if (command[0] === "exec") {
 
     await page.getByRole("button", { name: "Aprovar e executar" }).click();
     expect(await waitForRun(page, "completed")).toBe(runId);
+    await expect(page.getByRole("heading", { name: "Execução concluída" })).toBeVisible();
+    await expect(page.getByText("Chats dos agentes", { exact: true })).toBeVisible();
+    const dispatchedAgentCount = await page.evaluate(
+      async (id) => (await window.maestro.getRun(id)).tasks.length,
+      runId,
+    );
+    const agentChatButtons = page.locator('button[aria-label*="chat do agente"]');
+    await expect(agentChatButtons).toHaveCount(dispatchedAgentCount);
+    for (let index = 0; index < dispatchedAgentCount; index += 1) {
+      const agentChatButton = agentChatButtons.nth(index);
+      if ((await agentChatButton.getAttribute("aria-expanded")) !== "true") {
+        await agentChatButton.click();
+      }
+      const agentChat = agentChatButton.locator("..");
+      await expect(
+        agentChat.getByText("Agente fixture: contexto recebido.", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        agentChat.getByText("Agente fixture: tarefa concluída.", { exact: true }),
+      ).toBeVisible();
+    }
     expect(await readFile(sentinel, "utf8")).toBe("do not change\n");
 
     const recentConversation = page.locator("aside").getByTitle("Execute o fluxo Maestro E2E");
@@ -269,6 +412,24 @@ else if (command[0] === "exec") {
     await page.getByPlaceholder("Escreva uma mensagem…").fill("Diga olá");
     await page.getByRole("button", { name: "Enviar" }).click();
     await expect(page.getByText("Olá do chat E2E.", { exact: true })).toBeVisible();
+
+    await page.keyboard.press("Control+Shift+M");
+    await expect(page.getByRole("dialog", { name: "Troca rápida de modelo" })).toBeVisible();
+    await page.getByRole("button", { name: /Fixture Codex Fast/ }).click();
+    await expect(page.getByText("Troca preparada:", { exact: true })).toBeVisible();
+    await page.getByPlaceholder("Escreva uma mensagem…").fill("Continue no modelo rápido");
+    await page.getByRole("button", { name: "Enviar" }).click();
+    await expect(
+      page.getByText("Fast-switch com contexto recebido.", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          const conversation = (await window.maestro.bootstrap()).recentConversations[0];
+          return conversation?.modelId ?? null;
+        }),
+      )
+      .toBe("fixture-fast");
 
     await application.evaluate(({ clipboard }) => clipboard.writeText("conteúdo anexado E2E"));
     await page.getByRole("button", { name: "Adicionar contexto" }).click();
@@ -325,7 +486,8 @@ else if (command[0] === "exec") {
     });
     await expect(firstAccountHandle).toBeEnabled();
     await expect(secondAccountHandle).toBeEnabled();
-    await firstAccountHandle.dragTo(secondAccountHandle);
+    await firstAccountHandle.focus();
+    await firstAccountHandle.press("ArrowDown");
     await expect
       .poll(() =>
         page.evaluate(async () =>
@@ -348,6 +510,7 @@ else if (command[0] === "exec") {
     ).toBeVisible();
     await page.getByLabel("Canal de atualização").selectOption("beta");
     await page.getByLabel("Modo padrão de conversa").selectOption("chat");
+    await page.getByLabel("Otimização de tokens").selectOption("aggressive");
     await page.getByLabel("Concorrência global (1–16)").fill("7");
     await page.getByRole("switch", { name: "Telemetria local" }).click();
     await page.getByRole("tab", { name: "Conexões", exact: true }).click();
@@ -365,6 +528,7 @@ else if (command[0] === "exec") {
           defaultMode: settings.defaultMode,
           globalConcurrency: settings.globalConcurrency,
           telemetryEnabled: settings.telemetryEnabled,
+          tokenOptimizationMode: settings.tokenOptimizationMode,
         };
       })
       .toEqual({
@@ -373,11 +537,13 @@ else if (command[0] === "exec") {
         defaultMode: "chat",
         globalConcurrency: 7,
         telemetryEnabled: true,
+        tokenOptimizationMode: "aggressive",
       });
     await page.getByRole("tab", { name: "Geral", exact: true }).click();
     await expect(page.getByText("Preferências salvas automaticamente")).toBeVisible();
     await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
     await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
+    await expect(page.getByLabel("Otimização de tokens")).toHaveValue("aggressive");
     await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
     await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();
     await application.evaluate(({ BrowserWindow }) =>
@@ -388,6 +554,7 @@ else if (command[0] === "exec") {
     await page.getByRole("tab", { name: "Geral", exact: true }).click();
     await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
     await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
+    await expect(page.getByLabel("Otimização de tokens")).toHaveValue("aggressive");
     await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
     await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();
 

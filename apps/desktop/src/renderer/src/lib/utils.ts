@@ -34,6 +34,9 @@ export function durationLabel(milliseconds: number): string {
 }
 
 export const RUN_LABELS: Record<RunState, string> = {
+  discovering: "Entendendo o pedido",
+  awaiting_clarification: "Aguardando suas respostas",
+  researching: "Pesquisando o contexto",
   analyzing: "Analisando",
   planning: "Planejando",
   awaiting_approval: "Aguardando aprovação",
@@ -63,8 +66,20 @@ export function stateTone(
 ): "neutral" | "info" | "success" | "warning" | "danger" {
   if (state === "completed") return "success";
   if (state === "failed" || state === "canceled") return "danger";
-  if (state === "awaiting_approval" || state === "blocked") return "warning";
-  if (["analyzing", "planning", "queued", "running", "validating", "integrating"].includes(state))
+  if (state === "awaiting_clarification" || state === "awaiting_approval" || state === "blocked")
+    return "warning";
+  if (
+    [
+      "discovering",
+      "researching",
+      "analyzing",
+      "planning",
+      "queued",
+      "running",
+      "validating",
+      "integrating",
+    ].includes(state)
+  )
     return "info";
   return "neutral";
 }

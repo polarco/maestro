@@ -11,7 +11,10 @@ export function useLiveEvents(): void {
   useEffect(() => {
     return api().onRunEvent((event: RunEvent) => {
       pushEvent(event);
-      if (event.type === "message.delta" || event.type === "message.completed") {
+      if (
+        (event.type === "message.delta" || event.type === "message.completed") &&
+        !event.data.taskId
+      ) {
         queryClient.setQueriesData<ConversationDetail>(
           { queryKey: ["conversation"] },
           (current) => {
@@ -34,16 +37,29 @@ export function useLiveEvents(): void {
             return { ...current, messages };
           },
         );
+        if (event.type === "message.completed")
+          void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       }
 
       if (
         event.type === "run.state" ||
+        event.type === "discovery.started" ||
+        event.type === "workspace.inspected" ||
+        event.type === "discovery.completed" ||
+        event.type === "clarification.requested" ||
+        event.type === "clarification.answered" ||
+        event.type === "research.started" ||
+        event.type === "research.finding" ||
+        event.type === "brief.created" ||
         event.type === "plan.created" ||
         event.type === "plan.approved" ||
+        event.type === "agents.dispatched" ||
+        event.type === "execution.summary" ||
         event.type === "task.state" ||
         event.type === "error"
       ) {
         void queryClient.invalidateQueries({ queryKey: ["run", event.runId] });
+        void queryClient.invalidateQueries({ queryKey: ["run-events", event.runId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
         void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
       }

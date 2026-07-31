@@ -7,3 +7,4 @@ export * from "./plan-markdown.js";
 export * from "./router.js";
 export * from "./scheduler.js";
 export * from "./state-machine.js";
+export * from "./token-optimizer.js";

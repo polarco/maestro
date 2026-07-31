@@ -3,11 +3,13 @@ import type { RunState } from "@maestro/contracts";
 import { cn } from "@renderer/lib/utils";
 
 const stages: Array<{ states: RunState[]; label: string }> = [
-  { states: ["analyzing"], label: "Análise" },
+  { states: ["discovering", "analyzing"], label: "Entender" },
+  { states: ["awaiting_clarification"], label: "Alinhar" },
+  { states: ["researching"], label: "Pesquisar" },
   { states: ["planning", "awaiting_approval"], label: "Plano" },
-  { states: ["queued", "running"], label: "Execução" },
-  { states: ["validating"], label: "Validação" },
-  { states: ["integrating", "completed"], label: "Integração" },
+  { states: ["queued", "running"], label: "Agentes" },
+  { states: ["validating"], label: "Validar" },
+  { states: ["integrating", "completed"], label: "Integrar" },
 ];
 
 function stageIndex(state: RunState): number {
@@ -25,7 +27,9 @@ export function AgentPipeline({ state, compact = false }: { state: RunState; com
       {stages.map((stage, index) => {
         const active = index === current;
         const complete = current > index || state === "completed";
-        const approval = state === "awaiting_approval" && index === 1;
+        const approval =
+          (state === "awaiting_clarification" && stage.states.includes("awaiting_clarification")) ||
+          (state === "awaiting_approval" && stage.states.includes("awaiting_approval"));
         return (
           <div key={stage.label} className="flex min-w-0 flex-1 items-start">
             <div className="flex min-w-0 flex-1 flex-col items-center gap-1.5">

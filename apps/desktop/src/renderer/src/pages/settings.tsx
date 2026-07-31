@@ -1638,6 +1638,33 @@ function GeneralSettings({
                 />
               </div>
             </div>
+            <div className="md:col-span-2">
+              <SettingLabel
+                htmlFor="settings-token-optimization"
+                help="Otimiza apenas o payload enviado ao provedor. O histórico salvo nunca é reescrito. Ao trocar de modelo, um handoff local preserva decisões, progresso e referências importantes."
+              >
+                Otimização de tokens
+              </SettingLabel>
+              <Select
+                id="settings-token-optimization"
+                className="w-full"
+                value={settings.tokenOptimizationMode}
+                onChange={(event) =>
+                  updateSetting(
+                    "tokenOptimizationMode",
+                    event.target.value as AppSettings["tokenOptimizationMode"],
+                  )
+                }
+              >
+                <option value="balanced">Balanceada · recomendada</option>
+                <option value="aggressive">Agressiva · conversas muito longas</option>
+                <option value="off">Desativada · reenviar tudo</option>
+              </Select>
+              <p className="mt-2 text-[9.5px] leading-4 text-text-faint">
+                Estratégia em camadas adaptada do OmniRoute: limpeza determinística, janela recente
+                preservada e handoff estruturado quando o histórico precisa ser reduzido.
+              </p>
+            </div>
           </div>
           <div className="mt-4 flex items-start gap-3 rounded-[13px] border border-primary/18 bg-primary/[0.035] p-3.5">
             <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-primary/10 text-primary-soft">

@@ -27,6 +27,18 @@ describe("native event normalizers", () => {
     expect(normalizeCodexEvent({ method: "future/event", params: {} }, context)[0]?.type).toBe(
       "log",
     );
+    expect(
+      normalizeCodexEvent(
+        {
+          type: "item.completed",
+          item: { id: "answer", type: "agent_message", text: "Resposta pública" },
+        },
+        context,
+      )[0],
+    ).toMatchObject({
+      type: "message.completed",
+      data: { taskId: "task", content: "Resposta pública" },
+    });
   });
 
   it("drops Claude thinking while preserving text and tool calls", () => {
@@ -44,6 +56,8 @@ describe("native event normalizers", () => {
       context,
     );
     expect(events.map((event) => event.type)).toEqual(["message.delta", "tool.started"]);
+    expect(events[0]).toMatchObject({ type: "message.delta", data: { taskId: "task" } });
+    expect(events[1]).toMatchObject({ type: "tool.started", data: { taskId: "task" } });
     expect(JSON.stringify(events)).not.toContain("private reasoning");
   });
 });

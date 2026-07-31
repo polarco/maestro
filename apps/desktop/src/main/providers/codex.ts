@@ -15,7 +15,12 @@ import type {
   ProviderSession,
   ProviderSessionSpec,
 } from "@maestro/contracts";
-import { MaestroError, errorMessage, normalizeCodexEvent } from "@maestro/core";
+import {
+  MaestroError,
+  errorMessage,
+  normalizeCodexEvent,
+  resolveModelContextWindow,
+} from "@maestro/core";
 import type { ManagedProcess } from "../services/process-supervisor.js";
 import { CodexAppServerClient } from "./codex-app-server.js";
 import { CodexSchemaCache } from "./codex-schema-cache.js";
@@ -39,7 +44,7 @@ interface CodexSessionRecord {
   } | null;
 }
 
-function capability(efforts: Effort[], vision = false) {
+function capability(efforts: Effort[], vision = false, contextWindow = 400_000) {
   return {
     chat: true,
     coding: true,
@@ -47,8 +52,21 @@ function capability(efforts: Effort[], vision = false) {
     vision,
     reasoningEffort: efforts,
     structuredOutput: true,
-    contextWindow: null,
+    contextWindow,
   };
+}
+
+function modelContextWindow(entry: JsonRecord, modelId: string): number {
+  for (const candidate of [
+    entry.context_window,
+    entry.contextWindow,
+    entry.max_context_tokens,
+    entry.maxContextTokens,
+  ]) {
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0)
+      return Math.floor(candidate);
+  }
+  return resolveModelContextWindow("codex", modelId, null);
 }
 
 function inputParts(input: ProviderInput): ProviderInputPart[] {
@@ -287,6 +305,7 @@ export class CodexAdapter implements ProviderAdapter {
             capabilities: capability(
               efforts.length > 0 ? efforts : ["low", "medium", "high"],
               vision,
+              modelContextWindow(entry, id),
             ),
           },
         ];

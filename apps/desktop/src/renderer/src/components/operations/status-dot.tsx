@@ -34,7 +34,18 @@ export function StatusDot({
       </span>
     );
   }
-  if (["analyzing", "planning", "queued", "running", "validating", "integrating"].includes(state)) {
+  if (
+    [
+      "discovering",
+      "researching",
+      "analyzing",
+      "planning",
+      "queued",
+      "running",
+      "validating",
+      "integrating",
+    ].includes(state)
+  ) {
     return (
       <span
         className={cn(
@@ -46,7 +57,7 @@ export function StatusDot({
       </span>
     );
   }
-  if (state === "awaiting_approval" || state === "blocked") {
+  if (state === "awaiting_clarification" || state === "awaiting_approval" || state === "blocked") {
     return (
       <span
         className={cn(

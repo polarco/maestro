@@ -8,6 +8,9 @@ import {
   FileCode2,
   GitBranch,
   MessageSquareText,
+  Search,
+  BookOpenText,
+  ClipboardCheck,
   Route,
   TerminalSquare,
   Wrench,
@@ -22,6 +25,14 @@ function EventIcon({ event }: { event: RunEvent }) {
   if (event.type.startsWith("tool.")) return <Wrench {...props} className="text-primary-soft" />;
   if (event.type === "file.diff") return <FileCode2 {...props} className="text-warning" />;
   if (event.type === "route.selected") return <Route {...props} className="text-primary-soft" />;
+  if (event.type.startsWith("discovery.") || event.type === "workspace.inspected")
+    return <Search {...props} className="text-info" />;
+  if (event.type.startsWith("clarification."))
+    return <MessageSquareText {...props} className="text-warning" />;
+  if (event.type.startsWith("research.") || event.type === "brief.created")
+    return <BookOpenText {...props} className="text-success" />;
+  if (event.type === "execution.summary")
+    return <ClipboardCheck {...props} className="text-success" />;
   if (event.type.startsWith("agent.")) return <Bot {...props} className="text-info" />;
   if (event.type === "message.completed")
     return <MessageSquareText {...props} className="text-text-muted" />;
@@ -65,6 +76,26 @@ function summary(event: RunEvent): string {
       return event.data.delta.slice(0, 120);
     case "analysis.completed":
       return `Análise: ${event.data.analysis.objective}`;
+    case "discovery.started":
+      return `Descoberta rodada ${event.data.round}: ${event.data.message}`;
+    case "workspace.inspected":
+      return `Workspace estudado: ${event.data.files} arquivos e ${event.data.directories} pastas`;
+    case "discovery.completed":
+      return `Entendimento: ${event.data.discovery.desiredOutcome}`;
+    case "clarification.requested":
+      return `${event.data.questions.length} dúvida${event.data.questions.length === 1 ? "" : "s"} enviada${event.data.questions.length === 1 ? "" : "s"} ao usuário`;
+    case "clarification.answered":
+      return `Resposta recebida para a rodada ${event.data.round}`;
+    case "research.started":
+      return `Pesquisa iniciada: ${event.data.topics.join(", ") || "workspace e contexto"}`;
+    case "research.finding":
+      return `${event.data.finding.title} · ${event.data.finding.source}`;
+    case "brief.created":
+      return `Brief consolidado: ${event.data.brief.deliverable}`;
+    case "agents.dispatched":
+      return `${event.data.agents.length} agente${event.data.agents.length === 1 ? "" : "s"} despachado${event.data.agents.length === 1 ? "" : "s"}`;
+    case "execution.summary":
+      return event.data.summary;
     case "approval.required":
       return `Aprovação solicitada: ${event.data.summary}`;
     case "approval.resolved":
@@ -88,6 +119,12 @@ function details(event: RunEvent): unknown {
   if (event.type === "tool.started") return event.data.input;
   if (event.type === "tool.completed") return event.data.output;
   if (event.type === "error") return event.data.detail;
+  if (event.type === "workspace.inspected") return event.data;
+  if (event.type === "discovery.completed") return event.data.discovery;
+  if (event.type === "clarification.requested") return event.data.questions;
+  if (event.type === "brief.created") return event.data.brief;
+  if (event.type === "agents.dispatched") return event.data.agents;
+  if (event.type === "execution.summary") return event.data;
   return null;
 }
 

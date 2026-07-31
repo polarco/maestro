@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleDashed,
   Clock3,
+  MessageCircleQuestion,
   MessageSquare,
   Plus,
   ServerCog,
@@ -66,7 +67,13 @@ function RunCard({ run, detail }: { run: Run; detail?: RunDetail }) {
   return (
     <button
       className="group w-full rounded-[13px] border border-border bg-bg-elevated p-4 text-left transition-[border-color,background-color,transform] hover:-translate-y-0.5 hover:border-border-strong hover:bg-surface-hover/45"
-      onClick={() => setView({ type: "run", id: run.id })}
+      onClick={() =>
+        setView(
+          run.state === "awaiting_clarification"
+            ? { type: "conversation", id: run.conversationId }
+            : { type: "run", id: run.id },
+        )
+      }
     >
       <div className="flex items-start gap-3">
         <div className="grid size-8 shrink-0 place-items-center rounded-[8px] bg-primary/10 text-primary-soft">
@@ -129,7 +136,13 @@ export function Dashboard({
   const readyProviders = bootstrap.providers.filter(
     (provider) => provider.health.status === "ready",
   ).length;
-  const awaiting = bootstrap.activeRuns.filter((run) => run.state === "awaiting_approval").length;
+  const awaitingApproval = bootstrap.activeRuns.filter(
+    (run) => run.state === "awaiting_approval",
+  ).length;
+  const awaitingClarification = bootstrap.activeRuns.filter(
+    (run) => run.state === "awaiting_clarification",
+  ).length;
+  const awaiting = awaitingApproval + awaitingClarification;
   const activeAgents = [...details.values()]
     .flatMap((detail) => detail.tasks)
     .filter((task) => task.state === "running").length;
@@ -181,7 +194,34 @@ export function Dashboard({
           </div>
         </header>
 
-        {awaiting > 0 ? (
+        {awaitingClarification > 0 ? (
+          <button
+            className="mb-5 flex w-full items-center gap-3 rounded-[13px] border border-warning/25 bg-warning/[0.055] px-4 py-3 text-left transition-colors hover:border-warning/40 hover:bg-warning/[0.08]"
+            onClick={() => {
+              const run = bootstrap.activeRuns.find(
+                (item) => item.state === "awaiting_clarification",
+              );
+              if (run) setView({ type: "conversation", id: run.conversationId });
+            }}
+          >
+            <span className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-warning/12 text-warning">
+              <MessageCircleQuestion size={15} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[12px] font-semibold text-text">
+                {awaitingClarification} pedido
+                {awaitingClarification === 1 ? " precisa" : "s precisam"} das suas respostas
+              </span>
+              <span className="mt-0.5 block text-[10px] text-text-muted">
+                O Maestro pausou antes do plano para não decidir requisitos por você.
+              </span>
+            </span>
+            <span className="text-[11px] font-semibold text-warning">Responder no chat</span>
+            <ArrowRight size={14} className="text-warning" />
+          </button>
+        ) : null}
+
+        {awaitingApproval > 0 ? (
           <button
             className="mb-5 flex w-full items-center gap-3 rounded-[13px] border border-warning/25 bg-warning/[0.055] px-4 py-3 text-left transition-colors hover:border-warning/40 hover:bg-warning/[0.08]"
             onClick={() => {
@@ -194,7 +234,8 @@ export function Dashboard({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-[12px] font-semibold text-text">
-                {awaiting} plano{awaiting === 1 ? " precisa" : "s precisam"} da sua revisão
+                {awaitingApproval} plano{awaitingApproval === 1 ? " precisa" : "s precisam"} da sua
+                revisão
               </span>
               <span className="mt-0.5 block text-[10px] text-text-muted">
                 Nenhuma alteração será feita até você aprovar.
@@ -210,7 +251,13 @@ export function Dashboard({
             icon={<Activity size={15} />}
             label="Execuções ativas"
             value={bootstrap.activeRuns.length}
-            detail={awaiting ? `${awaiting} aguardando sua aprovação` : "Nenhuma ação pendente"}
+            detail={
+              awaitingClarification
+                ? `${awaitingClarification} aguardando respostas`
+                : awaitingApproval
+                  ? `${awaitingApproval} aguardando aprovação`
+                  : "Nenhuma ação pendente"
+            }
           />
           <MetricCard
             icon={<Bot size={15} />}
@@ -230,7 +277,13 @@ export function Dashboard({
             icon={<ShieldCheck size={15} />}
             label="Aprovações"
             value={awaiting}
-            detail={awaiting ? "Planos aguardam revisão" : "Sem bloqueios"}
+            detail={
+              awaitingClarification
+                ? "Há dúvidas no chat"
+                : awaitingApproval
+                  ? "Planos aguardam revisão"
+                  : "Sem bloqueios"
+            }
             tone={awaiting ? "warning" : "success"}
           />
         </section>
