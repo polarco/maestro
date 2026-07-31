@@ -28,23 +28,29 @@ function connection(
 
 describe("subscription-only process environment", () => {
   it("prioritizes user-installed CLIs over binaries from the desktop session PATH", () => {
+    const fixtureRoot = path.parse(process.cwd()).root;
+    const fixtureHome = path.join(fixtureRoot, "home", "maestro");
+    const customPnpm = path.join(fixtureHome, "custom-pnpm");
+    const npmGlobalBin = path.join(fixtureHome, ".npm-global", "bin");
+    const systemBin = path.join(fixtureRoot, "usr", "bin");
+    const fallbackBin = path.join(fixtureRoot, "bin");
     const env = subscriptionEnvironment(connection("codex", "/accounts/codex-2"), {
-      HOME: "/home/maestro",
-      PATH: ["/usr/bin", "/home/maestro/.npm-global/bin", "/bin"].join(path.delimiter),
-      PNPM_HOME: "/home/maestro/custom-pnpm",
+      HOME: fixtureHome,
+      PATH: [systemBin, npmGlobalBin, fallbackBin].join(path.delimiter),
+      PNPM_HOME: customPnpm,
     });
 
     expect(env.PATH?.split(path.delimiter)).toEqual([
-      "/home/maestro/custom-pnpm",
-      "/home/maestro/.local/bin",
-      "/home/maestro/.npm-global/bin",
-      "/home/maestro/.local/share/pnpm",
-      "/home/maestro/.bun/bin",
-      "/home/maestro/.volta/bin",
-      "/home/maestro/.cargo/bin",
-      "/home/maestro/Library/pnpm",
-      "/usr/bin",
-      "/bin",
+      customPnpm,
+      path.join(fixtureHome, ".local", "bin"),
+      npmGlobalBin,
+      path.join(fixtureHome, ".local", "share", "pnpm"),
+      path.join(fixtureHome, ".bun", "bin"),
+      path.join(fixtureHome, ".volta", "bin"),
+      path.join(fixtureHome, ".cargo", "bin"),
+      path.join(fixtureHome, "Library", "pnpm"),
+      systemBin,
+      fallbackBin,
     ]);
   });
 
