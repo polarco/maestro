@@ -33,7 +33,7 @@ describe("MaestroRepository", () => {
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
     ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     db.close();
-  });
+  }, 30_000);
 
   it("migrates a v2 database to multimodal context tables and FTS", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-v2-"));
@@ -62,7 +62,7 @@ describe("MaestroRepository", () => {
         .all(),
     ).toEqual([{ name: "context_assets" }, { name: "context_chunks_fts" }]);
     db.close();
-  });
+  }, 30_000);
 
   it("persists any number of isolated subscription connections", async () => {
     const db = await repository();

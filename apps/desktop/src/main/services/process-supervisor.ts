@@ -114,7 +114,9 @@ export class ProcessSupervisor {
           ),
         );
       });
-      managed.child.once("exit", (exitCode, signal) => {
+      // `exit` may fire before the stdio streams have drained. Waiting for
+      // `close` guarantees callers receive the complete captured output.
+      managed.child.once("close", (exitCode, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);

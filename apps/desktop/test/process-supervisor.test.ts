@@ -54,6 +54,24 @@ describe("ProcessSupervisor", () => {
     expect(Buffer.byteLength(result.stdout)).toBe(128);
   });
 
+  it("waits for inherited stdout to close before resolving", async () => {
+    const marker = "delayed output after parent exit";
+    const delayedWriter = `setTimeout(() => process.stdout.write(${JSON.stringify(marker)}), 75)`;
+    const launcher = [
+      `const { spawn } = require("node:child_process")`,
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], { stdio: ["ignore", process.stdout, process.stderr] })`,
+      "child.unref()",
+    ].join(";");
+
+    const result = await supervisor().capture({
+      executable: process.execPath,
+      args: ["-e", launcher],
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(marker);
+  });
+
   it("rejects after a timeout even when process exit races cleanup", async () => {
     const pending = supervisor().capture(
       {
