@@ -101,6 +101,7 @@ describe("GitService", () => {
     await writeFile(path.join(worktree.path, "result.txt"), "result\n", "utf8");
     const commit = await service.commitTask(worktree, "result");
     await writeFile(path.join(repository, "outside.txt"), "user edit\n", "utf8");
+    expect((await service.inspect(path.join(repository, "allowed"))).dirty).toBe(true);
 
     const result = await service.integrate(context!, [commit!]);
     expect(result.appliedToSource).toBe(false);

@@ -72,15 +72,20 @@ export class GitService {
         status: "",
       };
     }
+    // Always inspect the complete repository, even when the user selected a
+    // nested workspace root. Otherwise a Git implementation may scope status
+    // to that subdirectory and allow an unsafe fast-forward over user changes
+    // elsewhere in the same checkout.
+    const gitRoot = repositoryRoot.stdout;
     const [branch, head, status] = await Promise.all([
-      this.#git(["-C", root, "rev-parse", "--abbrev-ref", "HEAD"], root),
-      this.#git(["-C", root, "rev-parse", "HEAD"], root),
-      this.#git(["-C", root, "status", "--porcelain=v1", "--untracked-files=normal"], root),
+      this.#git(["-C", gitRoot, "rev-parse", "--abbrev-ref", "HEAD"], gitRoot),
+      this.#git(["-C", gitRoot, "rev-parse", "HEAD"], gitRoot),
+      this.#git(["-C", gitRoot, "status", "--porcelain=v1", "--untracked-files=normal"], gitRoot),
     ]);
     return {
       isGit: true,
       root,
-      repositoryRoot: repositoryRoot.stdout,
+      repositoryRoot: gitRoot,
       branch: branch.stdout,
       head: head.stdout,
       dirty: Boolean(status.stdout.trim()),
