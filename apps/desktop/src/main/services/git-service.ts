@@ -45,6 +45,21 @@ function safeRefPart(value: string): string {
   return safe.slice(0, 60) || "task";
 }
 
+async function canonicalPathForComparison(value: string): Promise<string> {
+  const resolved = path.resolve(value);
+  const canonical = await realpath(resolved).catch(() => resolved);
+  const normalized = path.normalize(canonical);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+async function pathsReferToSameLocation(left: string, right: string): Promise<boolean> {
+  const [canonicalLeft, canonicalRight] = await Promise.all([
+    canonicalPathForComparison(left),
+    canonicalPathForComparison(right),
+  ]);
+  return canonicalLeft === canonicalRight;
+}
+
 export class GitService {
   readonly #supervisor: ProcessSupervisor;
   readonly #worktreeBase: string;
@@ -128,7 +143,7 @@ export class GitService {
     const branch = `maestro/${runPart}/task/${taskPart}`;
     await mkdir(path.dirname(worktreeRoot), { recursive: true });
     const existing = await this.#registeredWorktree(context.repositoryRoot, branch);
-    if (existing && path.resolve(existing) !== path.resolve(worktreeRoot))
+    if (existing && !(await pathsReferToSameLocation(existing, worktreeRoot)))
       throw new MaestroError(
         "WORKTREE_SCOPE_MISMATCH",
         `O branch ${branch} está associado a outra worktree; a retomada foi bloqueada.`,
@@ -240,7 +255,7 @@ export class GitService {
     const branch = `maestro/${runPart}/integration`;
     await mkdir(path.dirname(integrationRoot), { recursive: true });
     const existing = await this.#registeredWorktree(context.repositoryRoot, branch);
-    if (existing && path.resolve(existing) !== path.resolve(integrationRoot))
+    if (existing && !(await pathsReferToSameLocation(existing, integrationRoot)))
       throw new MaestroError(
         "WORKTREE_SCOPE_MISMATCH",
         `O branch ${branch} está associado a outra worktree; a integração foi bloqueada.`,
