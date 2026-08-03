@@ -54,22 +54,25 @@ describe("ProcessSupervisor", () => {
     expect(Buffer.byteLength(result.stdout)).toBe(128);
   });
 
-  it("waits for inherited stdout to close before resolving", async () => {
-    const marker = "delayed output after parent exit";
-    const delayedWriter = `setTimeout(() => process.stdout.write(${JSON.stringify(marker)}), 75)`;
-    const launcher = [
-      `const { spawn } = require("node:child_process")`,
-      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], { stdio: ["ignore", process.stdout, process.stderr] })`,
-      "child.unref()",
+  it("waits for direct child stdout to close before resolving", async () => {
+    const payloadSize = 2 * 1024 * 1024;
+    const marker = "complete-output";
+    const writer = [
+      `process.stdout.write("x".repeat(${payloadSize}))`,
+      `process.stdout.write(${JSON.stringify(marker)})`,
     ].join(";");
 
-    const result = await supervisor().capture({
-      executable: process.execPath,
-      args: ["-e", launcher],
-    });
+    const result = await supervisor().capture(
+      {
+        executable: process.execPath,
+        args: ["-e", writer],
+      },
+      { maxOutputBytes: payloadSize + Buffer.byteLength(marker) },
+    );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe(marker);
+    expect(Buffer.byteLength(result.stdout)).toBe(payloadSize + Buffer.byteLength(marker));
+    expect(result.stdout.endsWith(marker)).toBe(true);
   });
 
   it("rejects after a timeout even when process exit races cleanup", async () => {
