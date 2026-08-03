@@ -30,6 +30,7 @@ import { subscriptionEnvironment } from "./subscription-environment.js";
 
 type JsonRecord = Record<string, unknown>;
 const OFFICIAL_SUBSCRIPTION_CONFIG = ["-c", 'model_provider="openai"'] as const;
+const MAESTRO_PERMISSION_PROFILE = "maestro-session";
 
 interface CodexSessionRecord {
   session: ProviderSession;
@@ -97,9 +98,36 @@ export function codexModelSupportsVision(entry: JsonRecord): boolean {
   return rawModalities?.some((item) => item === "image") ?? false;
 }
 
-function restrictedThreadConfig(spec: ProviderSessionSpec): JsonRecord | null {
+export function codexThreadConfig(spec: ProviderSessionSpec): JsonRecord {
   const shellAllowed = spec.permissions.runCommands && spec.tools.includes("command.run");
+  const workspaceAllowed = spec.permissions.readWorkspace || spec.permissions.writeWorkspace;
+  const filesystem: JsonRecord = {
+    ":minimal": "read",
+    ...(workspaceAllowed
+      ? {
+          ":workspace_roots": {
+            ".": spec.permissions.writeWorkspace ? "write" : "read",
+          },
+        }
+      : {}),
+    ...(spec.permissions.writeWorkspace
+      ? {
+          ":tmpdir": "write",
+          ":slash_tmp": "write",
+        }
+      : {}),
+  };
   return {
+    default_permissions: MAESTRO_PERMISSION_PROFILE,
+    permissions: {
+      [MAESTRO_PERMISSION_PROFILE]: {
+        workspace_roots: Object.fromEntries(spec.workspaceRoots.map((root) => [root, true])),
+        filesystem,
+        network: {
+          enabled: spec.permissions.network,
+        },
+      },
+    },
     web_search: "disabled",
     mcp_servers: {},
     features: {
@@ -133,29 +161,6 @@ function restrictedExecArgs(spec: ProviderSessionSpec): string[] {
     "--disable",
     "unified_exec",
   ];
-}
-
-function sandboxPolicy(spec: ProviderSessionSpec): JsonRecord {
-  if (spec.permissions.writeWorkspace) {
-    return {
-      type: "workspaceWrite",
-      writableRoots: spec.workspaceRoots,
-      readOnlyAccess: {
-        type: "restricted",
-        includePlatformDefaults: true,
-        readableRoots: spec.workspaceRoots,
-      },
-      networkAccess: spec.permissions.network,
-    };
-  }
-  return {
-    type: "readOnly",
-    access: {
-      type: "restricted",
-      includePlatformDefaults: true,
-      readableRoots: spec.workspaceRoots,
-    },
-  };
 }
 
 function nestedString(value: unknown, keys: string[]): string | null {
@@ -392,13 +397,12 @@ export class CodexAdapter implements ProviderAdapter {
 
     try {
       const client = await this.#ensureClient();
-      const config = restrictedThreadConfig(spec);
+      const config = codexThreadConfig(spec);
       const result = await client.request<JsonRecord>("thread/start", {
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
-        sandboxPolicy: sandboxPolicy(spec),
-        ...(config ? { config } : {}),
+        config,
         ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
         ephemeral: false,
       });
@@ -442,14 +446,13 @@ export class CodexAdapter implements ProviderAdapter {
     this.#sessions.set(session.id, record);
     try {
       const client = await this.#ensureClient();
-      const config = restrictedThreadConfig(spec);
+      const config = codexThreadConfig(spec);
       await client.request("thread/resume", {
         threadId: spec.resumeSessionId,
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
-        sandboxPolicy: sandboxPolicy(spec),
-        ...(config ? { config } : {}),
+        config,
         ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
       });
       record.session.state = "idle";
@@ -483,7 +486,6 @@ export class CodexAdapter implements ProviderAdapter {
         ...(record.spec.model !== "default" ? { model: record.spec.model } : {}),
         ...(record.spec.effort !== "none" ? { effort: record.spec.effort } : {}),
         approvalPolicy: "never",
-        sandboxPolicy: sandboxPolicy(record.spec),
         ...(record.spec.outputSchema ? { outputSchema: record.spec.outputSchema } : {}),
       });
       record.currentTurnId = nestedString(result, ["turn", "id"]);
