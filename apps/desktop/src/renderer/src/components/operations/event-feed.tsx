@@ -24,7 +24,13 @@ function EventIcon({ event }: { event: RunEvent }) {
   if (event.type.startsWith("command.")) return <TerminalSquare {...props} className="text-info" />;
   if (event.type.startsWith("tool.")) return <Wrench {...props} className="text-primary-soft" />;
   if (event.type === "file.diff") return <FileCode2 {...props} className="text-warning" />;
-  if (event.type === "route.selected") return <Route {...props} className="text-primary-soft" />;
+  if (
+    event.type === "route.selected" ||
+    event.type === "route.candidates" ||
+    event.type === "route.fallback" ||
+    event.type.startsWith("model.switch")
+  )
+    return <Route {...props} className="text-primary-soft" />;
   if (event.type.startsWith("discovery.") || event.type === "workspace.inspected")
     return <Search {...props} className="text-info" />;
   if (event.type.startsWith("clarification."))
@@ -50,6 +56,12 @@ function summary(event: RunEvent): string {
       return `${event.data.taskId}: ${event.data.to}`;
     case "route.selected":
       return `${event.data.role} → ${event.data.selection.providerId}/${event.data.selection.modelId}`;
+    case "route.candidates":
+      return `Rota avaliada: ${event.data.decision.candidates.length} candidato(s) · ${event.data.decision.rationale}`;
+    case "route.fallback":
+      return `Fallback ${event.data.from.providerId}/${event.data.from.modelId} → ${event.data.to.providerId}/${event.data.to.modelId}`;
+    case "turn.classified":
+      return `Pedido classificado como ${event.data.intent.path}: ${event.data.intent.rationale}`;
     case "plan.created":
       return `Plano v${event.data.plan.version} criado`;
     case "plan.approved":
@@ -100,6 +112,18 @@ function summary(event: RunEvent): string {
       return `Aprovação solicitada: ${event.data.summary}`;
     case "approval.resolved":
       return `Aprovação ${event.data.decision === "approved" ? "concedida" : "negada"} pela política`;
+    case "checkpoint.created":
+      return `Checkpoint v${event.data.checkpoint.version} ${event.data.checkpoint.safeToResume ? "seguro" : "com efeito pendente"}`;
+    case "recovery.attempted":
+      return `Recuperação ${event.data.attempt.kind}: ${event.data.attempt.reason}`;
+    case "recovery.completed":
+      return `Recuperação ${event.data.attempt.kind}: ${event.data.attempt.outcome}`;
+    case "context.optimized":
+      return `Contexto: ${event.data.sentTokens} tokens enviados · ${event.data.savedTokens} economizados`;
+    case "model.switch.pending":
+      return `Troca pendente → ${event.data.selection.providerId}/${event.data.selection.modelId}`;
+    case "model.switch.applied":
+      return `Modelo trocado → ${event.data.selection.providerId}/${event.data.selection.modelId}`;
     case "metric":
       return `Métricas${event.data.outputTokens ? ` · ${event.data.outputTokens} tokens de saída` : ""}`;
     case "log":
@@ -111,6 +135,7 @@ function summary(event: RunEvent): string {
     case "plan.revision_requested":
       return `Revisão solicitada para o plano v${event.data.version}`;
   }
+  return "Evento de execução";
 }
 
 function details(event: RunEvent): unknown {

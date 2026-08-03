@@ -255,3 +255,162 @@ CREATE TRIGGER context_chunks_fts_delete AFTER DELETE ON context_chunks BEGIN
   DELETE FROM context_chunks_fts WHERE chunk_id = old.id;
 END;
 `;
+
+/** Additive runtime state for adaptive Maestro turns. Existing runs/messages stay authoritative. */
+export const AGENT_RUNTIME_MIGRATION = `
+CREATE TABLE turns (
+  id TEXT PRIMARY KEY NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  sequence INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  policy TEXT NOT NULL,
+  model_preference TEXT NOT NULL,
+  selected_model TEXT,
+  input_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  output_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  error TEXT
+);
+CREATE UNIQUE INDEX turns_conversation_sequence_uidx
+  ON turns(conversation_id, sequence);
+CREATE INDEX turns_run_state_idx ON turns(run_id, state);
+
+CREATE TABLE turn_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  sequence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX turn_items_turn_sequence_uidx ON turn_items(turn_id, sequence);
+
+CREATE TABLE tool_calls (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  tool_name TEXT NOT NULL,
+  input TEXT NOT NULL,
+  status TEXT NOT NULL,
+  mutability TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  checkpoint_id TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE UNIQUE INDEX tool_calls_idempotency_uidx ON tool_calls(idempotency_key);
+CREATE INDEX tool_calls_turn_status_idx ON tool_calls(turn_id, status);
+
+CREATE TABLE tool_results (
+  id TEXT PRIMARY KEY NOT NULL,
+  tool_call_id TEXT NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
+  output TEXT,
+  is_error INTEGER NOT NULL,
+  error TEXT,
+  artifact_ref TEXT,
+  truncated INTEGER NOT NULL,
+  content_hash TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX tool_results_call_uidx ON tool_results(tool_call_id);
+
+CREATE TABLE approvals (
+  id TEXT PRIMARY KEY NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  plan_version INTEGER,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT
+);
+CREATE INDEX approvals_run_status_idx ON approvals(run_id, status);
+
+CREATE TABLE context_checkpoints (
+  id TEXT PRIMARY KEY NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  checkpoint TEXT NOT NULL,
+  safe_to_resume INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX checkpoints_turn_version_uidx
+  ON context_checkpoints(turn_id, version);
+CREATE INDEX checkpoints_conversation_created_idx
+  ON context_checkpoints(conversation_id, created_at);
+
+CREATE TABLE routing_decisions (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  role TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  connection_id TEXT,
+  model_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX routing_decisions_run_created_idx ON routing_decisions(run_id, created_at);
+
+CREATE TABLE model_telemetry (
+  key TEXT PRIMARY KEY NOT NULL,
+  provider_id TEXT NOT NULL,
+  connection_id TEXT,
+  model_id TEXT NOT NULL,
+  successes INTEGER NOT NULL,
+  failures INTEGER NOT NULL,
+  consecutive_failures INTEGER NOT NULL,
+  latency_ewma_ms REAL,
+  quota_remaining REAL,
+  quota_limit REAL,
+  active_sessions INTEGER NOT NULL,
+  concurrency_limit INTEGER,
+  cooldown_until TEXT,
+  circuit_state TEXT NOT NULL,
+  cached_input_tokens INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cost_usd REAL NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX model_telemetry_selection_uidx
+  ON model_telemetry(provider_id, IFNULL(connection_id, ''), model_id);
+
+CREATE TABLE recovery_attempts (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  attempt TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX recovery_attempts_turn_idx ON recovery_attempts(turn_id, created_at);
+
+CREATE TABLE tool_artifacts (
+  id TEXT PRIMARY KEY NOT NULL,
+  tool_call_id TEXT NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  byte_length INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX tool_artifacts_call_idx ON tool_artifacts(tool_call_id);
+
+CREATE TABLE pending_model_switches (
+  run_id TEXT PRIMARY KEY NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  selection TEXT NOT NULL,
+  timing TEXT NOT NULL,
+  no_fallback INTEGER NOT NULL,
+  requested_at TEXT NOT NULL
+);
+`;

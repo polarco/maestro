@@ -7,16 +7,24 @@ import {
   effortSchema,
   entityIdSchema,
   IPC_CHANNELS,
+  modelPreferenceSchema,
+  modelSelectionSchema,
   runModeSchema,
   sessionKindSchema,
   type ConfigureProviderInput,
+  type AnswerQuestionsInput,
+  type CompactTurnInput,
   type CreateProviderConnectionInput,
   type CreateConversationInput,
   type CreateProjectInput,
+  type ForkConversationInput,
+  type GranularApprovalInput,
   type PrepareWorkspaceContextInput,
   type SearchWorkspaceContextInput,
   type SendMessageInput,
   type StageRecordedAudioInput,
+  type SteerTurnInput,
+  type SwitchModelInput,
   type UpdateConversationInput,
   type UpdateProjectInput,
   type UpdateProviderConnectionInput,
@@ -57,6 +65,7 @@ const sendMessageSchema = z
     effort: effortSchema,
     workspaceRootId: entityIdSchema,
     contextItems: z.array(contextItemInputSchema).max(20),
+    modelPreference: modelPreferenceSchema.optional(),
   })
   .strict()
   .refine((value) => value.content.trim().length > 0 || value.contextItems.length > 0, {
@@ -134,6 +143,62 @@ const reorderProviderConnectionsSchema = z
   .refine((connectionIds) => new Set(connectionIds).size === connectionIds.length, {
     message: "A ordem das contas não pode conter itens duplicados.",
   });
+
+const granularApprovalSchema = z
+  .object({
+    runId: entityIdSchema,
+    planVersion: z.number().int().positive(),
+    allowedTools: z.array(z.string().min(1).max(128)).max(128).optional(),
+    allowedCommands: z.array(z.string().min(1).max(8_192)).max(128).optional(),
+    writablePaths: z.array(z.string().min(1).max(8_192)).max(128).optional(),
+    network: z.enum(["denied", "web", "full"]).optional(),
+  })
+  .strict();
+const steerTurnSchema = z
+  .object({ runId: entityIdSchema, content: z.string().trim().min(1).max(100_000) })
+  .strict();
+const answerQuestionsSchema = z
+  .object({
+    runId: entityIdSchema,
+    answers: z
+      .array(
+        z
+          .object({
+            questionId: z.string().min(1).max(200),
+            selectedOption: z.string().max(2_000).optional(),
+            freeText: z.string().max(20_000).optional(),
+          })
+          .strict()
+          .refine((answer) => Boolean(answer.selectedOption || answer.freeText), {
+            message: "Cada pergunta precisa de uma opção ou resposta livre.",
+          }),
+      )
+      .min(1)
+      .max(32),
+  })
+  .strict();
+const switchModelSchema = z
+  .object({
+    runId: entityIdSchema,
+    selection: modelSelectionSchema,
+    timing: z.enum(["next_checkpoint", "immediate"]),
+    noFallback: z.boolean().optional(),
+  })
+  .strict();
+const compactContextSchema = z
+  .object({
+    conversationId: entityIdSchema,
+    runId: entityIdSchema.optional(),
+    force: z.boolean().optional(),
+  })
+  .strict();
+const forkConversationSchema = z
+  .object({
+    conversationId: entityIdSchema,
+    checkpointId: entityIdSchema.optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
 
 export function registerIpc(application: ApplicationService, window: BrowserWindow): () => void {
   const channels: string[] = [];
@@ -268,6 +333,7 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
       workspaceRootId: parsed.workspaceRootId,
       contextItems: parsed.contextItems,
       ...(parsed.providerConnectionId ? { providerConnectionId: parsed.providerConnectionId } : {}),
+      ...(parsed.modelPreference ? { modelPreference: parsed.modelPreference } : {}),
     });
   });
   handle(IPC_CHANNELS.runGet, (_event, runId: string) =>
@@ -283,6 +349,17 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
   handle(IPC_CHANNELS.runApprove, (_event, runId: string, version: number) =>
     application.approveRun(entityIdSchema.parse(runId), z.number().int().positive().parse(version)),
   );
+  handle(IPC_CHANNELS.runApproveGranular, (_event, input: GranularApprovalInput) => {
+    const parsed = granularApprovalSchema.parse(input);
+    return application.approveRunGranular({
+      runId: parsed.runId,
+      planVersion: parsed.planVersion,
+      ...(parsed.allowedTools ? { allowedTools: parsed.allowedTools } : {}),
+      ...(parsed.allowedCommands ? { allowedCommands: parsed.allowedCommands } : {}),
+      ...(parsed.writablePaths ? { writablePaths: parsed.writablePaths } : {}),
+      ...(parsed.network ? { network: parsed.network } : {}),
+    });
+  });
   handle(IPC_CHANNELS.runRevise, (_event, runId: string, version: number, comment: string) =>
     application.reviseRun(
       entityIdSchema.parse(runId),
@@ -293,6 +370,62 @@ export function registerIpc(application: ApplicationService, window: BrowserWind
   handle(IPC_CHANNELS.runCancel, (_event, runId: string) =>
     application.cancelRun(entityIdSchema.parse(runId)),
   );
+  handle(IPC_CHANNELS.turnSteer, (_event, input: SteerTurnInput) =>
+    application.steerTurn(steerTurnSchema.parse(input)),
+  );
+  handle(IPC_CHANNELS.questionsAnswer, (_event, input: AnswerQuestionsInput) => {
+    const parsed = answerQuestionsSchema.parse(input);
+    return application.answerQuestions({
+      runId: parsed.runId,
+      answers: parsed.answers.map((answer) => ({
+        questionId: answer.questionId,
+        ...(answer.selectedOption ? { selectedOption: answer.selectedOption } : {}),
+        ...(answer.freeText ? { freeText: answer.freeText } : {}),
+      })),
+    });
+  });
+  handle(IPC_CHANNELS.modelSwitch, (_event, input: SwitchModelInput) => {
+    const parsed = switchModelSchema.parse(input);
+    return application.switchModel({
+      runId: parsed.runId,
+      selection: {
+        providerId: parsed.selection.providerId,
+        modelId: parsed.selection.modelId,
+        ...(parsed.selection.connectionId ? { connectionId: parsed.selection.connectionId } : {}),
+        ...(parsed.selection.effort ? { effort: parsed.selection.effort } : {}),
+      },
+      timing: parsed.timing,
+      ...(parsed.noFallback === undefined ? {} : { noFallback: parsed.noFallback }),
+    });
+  });
+  handle(IPC_CHANNELS.runRetry, (_event, runId: string) =>
+    application.retryRun(entityIdSchema.parse(runId)),
+  );
+  handle(IPC_CHANNELS.runReplan, (_event, runId: string, reason: string) =>
+    application.replanRun(
+      entityIdSchema.parse(runId),
+      z.string().trim().min(1).max(100_000).parse(reason),
+    ),
+  );
+  handle(IPC_CHANNELS.contextCompact, (_event, input: CompactTurnInput) => {
+    const parsed = compactContextSchema.parse(input);
+    return application.compactContext({
+      conversationId: parsed.conversationId,
+      ...(parsed.runId ? { runId: parsed.runId } : {}),
+      ...(parsed.force === undefined ? {} : { force: parsed.force }),
+    });
+  });
+  handle(IPC_CHANNELS.routeInspect, (_event, runId: string) =>
+    application.inspectRoute(entityIdSchema.parse(runId)),
+  );
+  handle(IPC_CHANNELS.conversationFork, (_event, input: ForkConversationInput) => {
+    const parsed = forkConversationSchema.parse(input);
+    return application.forkConversation({
+      conversationId: parsed.conversationId,
+      ...(parsed.checkpointId ? { checkpointId: parsed.checkpointId } : {}),
+      ...(parsed.title ? { title: parsed.title } : {}),
+    });
+  });
   handle(IPC_CHANNELS.providerRefresh, () => application.refreshProviders());
   handle(IPC_CHANNELS.providerConfigure, (_event, input: ConfigureProviderInput) =>
     application.configureProvider(configureProviderSchema.parse(input)),

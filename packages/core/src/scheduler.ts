@@ -5,6 +5,7 @@ import { MaestroError } from "./errors.js";
 export interface SchedulerOptions {
   globalConcurrency: number;
   providerConcurrency?: Readonly<Record<string, number>>;
+  initialStates?: ReadonlyMap<string, TaskState>;
   signal?: AbortSignal;
   onState?: (
     task: TaskSpec,
@@ -49,7 +50,9 @@ export class DagScheduler {
 
   async run(tasks: readonly TaskSpec[], executor: TaskExecutor): Promise<SchedulerResult> {
     assertValidDag(tasks);
-    const states = new Map<string, TaskState>(tasks.map((task) => [task.id, "pending"]));
+    const states = new Map<string, TaskState>(
+      tasks.map((task) => [task.id, this.#options.initialStates?.get(task.id) ?? "pending"]),
+    );
     const active = new Map<string, ActiveTask>();
     const providerCounts = new Map<string, number>();
     const workspaceWriters = new Set<string>();

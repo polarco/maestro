@@ -195,6 +195,42 @@ export const modelSelectionSchema = z.object({
 });
 export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
+export const routingProfileSchema = z.enum(["fast", "economical", "deep"]);
+export type RoutingProfile = z.infer<typeof routingProfileSchema>;
+
+export const modelPreferenceSchema = z
+  .object({
+    mode: z.enum(["auto", "manual"]).default("auto"),
+    profile: routingProfileSchema.default("economical"),
+    pin: modelSelectionSchema.nullable().default(null),
+    noFallback: z.boolean().default(false),
+  })
+  .strict();
+export type ModelPreference = z.infer<typeof modelPreferenceSchema>;
+
+export const turnPathSchema = z.enum(["answer", "research", "plan", "execute"]);
+export type TurnPath = z.infer<typeof turnPathSchema>;
+
+export const turnIntentSchema = z
+  .object({
+    path: turnPathSchema,
+    category: z.enum([
+      "simple_question",
+      "workspace_question",
+      "change_request",
+      "approved_execution",
+      "continuation",
+    ]),
+    confidence: z.number().min(0).max(1),
+    rationale: z.string().min(1),
+    requiresWorkspace: z.boolean(),
+    requiresApproval: z.boolean(),
+    materialDecisions: z.array(z.string().min(1)).default([]),
+    requestedCapabilities: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type TurnIntent = z.infer<typeof turnIntentSchema>;
+
 export const permissionSpecSchema = z.object({
   readWorkspace: z.boolean().default(true),
   writeWorkspace: z.boolean().default(false),
@@ -206,6 +242,187 @@ export const permissionSpecSchema = z.object({
     .default(["sudo", "su", "ssh", "scp", "rsync", "curl", "wget", "docker", "kubectl"]),
 });
 export type PermissionSpec = z.infer<typeof permissionSpecSchema>;
+
+export const executablePolicySchema = z
+  .object({
+    executable: z.string().min(1),
+    /** Exact argument prefix. Empty means any argument list for this executable. */
+    argsPrefix: z.array(z.string()).default([]),
+    cwdRoots: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type ExecutablePolicy = z.infer<typeof executablePolicySchema>;
+
+export const executionPolicySchema = z
+  .object({
+    readableRoots: z.array(z.string().min(1)).default([]),
+    writableRoots: z.array(z.string().min(1)).default([]),
+    allowedTools: z.array(z.string().min(1)).default([]),
+    allowedExecutables: z.array(executablePolicySchema).default([]),
+    network: z.enum(["denied", "web", "full"]).default("denied"),
+    externalMutations: z.boolean().default(false),
+    writeApproved: z.boolean().default(false),
+    approvalId: entityIdSchema.nullable().default(null),
+    approvedPlanVersion: z.number().int().positive().nullable().default(null),
+    scopeHash: z.string().min(1),
+  })
+  .strict();
+export type ExecutionPolicy = z.infer<typeof executionPolicySchema>;
+
+export const toolMutabilitySchema = z.enum(["read", "workspace", "external"]);
+export type ToolMutability = z.infer<typeof toolMutabilitySchema>;
+
+export const toolDefinitionSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9_.-]{0,127}$/),
+    title: z.string().min(1).max(160),
+    description: z.string().min(1),
+    category: z.enum([
+      "filesystem",
+      "search",
+      "language",
+      "command",
+      "question",
+      "agent",
+      "skill",
+      "mcp",
+      "web",
+    ]),
+    mutability: toolMutabilitySchema,
+    inputSchema: z.record(z.string(), z.unknown()),
+    outputSchema: z.record(z.string(), z.unknown()).nullable().default(null),
+    requiresApproval: z.boolean().default(false),
+    idempotent: z.boolean().default(true),
+  })
+  .strict();
+export type ToolDefinition = z.infer<typeof toolDefinitionSchema>;
+
+export const toolCallStatusSchema = z.enum([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "denied",
+  "unknown_effect",
+]);
+export type ToolCallStatus = z.infer<typeof toolCallStatusSchema>;
+
+export const toolCallSchema = z
+  .object({
+    id: entityIdSchema,
+    turnId: entityIdSchema,
+    runId: entityIdSchema.nullable(),
+    toolName: z.string().min(1),
+    input: z.unknown(),
+    status: toolCallStatusSchema,
+    mutability: toolMutabilitySchema,
+    idempotencyKey: z.string().min(1),
+    checkpointId: entityIdSchema.nullable(),
+    createdAt: isoDateSchema,
+    startedAt: isoDateSchema.nullable(),
+    finishedAt: isoDateSchema.nullable(),
+  })
+  .strict();
+export type ToolCall = z.infer<typeof toolCallSchema>;
+
+export const toolResultSchema = z
+  .object({
+    id: entityIdSchema,
+    toolCallId: entityIdSchema,
+    output: z.unknown(),
+    isError: z.boolean(),
+    error: z.string().nullable(),
+    artifactRef: z.string().nullable(),
+    truncated: z.boolean().default(false),
+    contentHash: z.string().nullable(),
+    createdAt: isoDateSchema,
+  })
+  .strict();
+export type ToolResult = z.infer<typeof toolResultSchema>;
+
+export const contextCheckpointSchema = z
+  .object({
+    id: entityIdSchema,
+    conversationId: entityIdSchema,
+    runId: entityIdSchema.nullable(),
+    turnId: entityIdSchema,
+    version: z.number().int().positive(),
+    objective: z.string(),
+    decisions: z.array(z.string()).default([]),
+    progress: z.array(z.string()).default([]),
+    pending: z.array(z.string()).default([]),
+    entities: z.record(z.string(), z.string()).default({}),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            state: z.enum(["read", "planned", "modified", "validated", "unknown"]),
+            contentHash: z.string().nullable().default(null),
+          })
+          .strict(),
+      )
+      .default([]),
+    toolState: z.record(z.string(), z.unknown()).default({}),
+    safeToResume: z.boolean().default(true),
+    createdAt: isoDateSchema,
+  })
+  .strict();
+export type ContextCheckpoint = z.infer<typeof contextCheckpointSchema>;
+
+export const turnStateSchema = z.enum([
+  "classified",
+  "running",
+  "awaiting_question",
+  "awaiting_approval",
+  "completed",
+  "failed",
+  "canceled",
+]);
+export type TurnState = z.infer<typeof turnStateSchema>;
+
+export const turnSchema = z
+  .object({
+    id: entityIdSchema,
+    conversationId: entityIdSchema,
+    runId: entityIdSchema.nullable(),
+    sequence: z.number().int().positive(),
+    state: turnStateSchema,
+    intent: turnIntentSchema,
+    policy: executionPolicySchema,
+    modelPreference: modelPreferenceSchema,
+    selectedModel: modelSelectionSchema.nullable(),
+    inputMessageId: entityIdSchema.nullable(),
+    outputMessageId: entityIdSchema.nullable(),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+    completedAt: isoDateSchema.nullable(),
+    error: z.string().nullable(),
+  })
+  .strict();
+export type Turn = z.infer<typeof turnSchema>;
+
+export const turnItemSchema = z
+  .object({
+    id: entityIdSchema,
+    turnId: entityIdSchema,
+    sequence: z.number().int().nonnegative(),
+    kind: z.enum([
+      "message",
+      "question",
+      "plan",
+      "tool_call",
+      "tool_result",
+      "checkpoint",
+      "route",
+      "metric",
+      "error",
+    ]),
+    payload: z.unknown(),
+    createdAt: isoDateSchema,
+  })
+  .strict();
+export type TurnItem = z.infer<typeof turnItemSchema>;
 
 export const budgetSpecSchema = z.object({
   maxTokens: z.number().int().positive().nullable().default(null),
@@ -257,6 +474,9 @@ export const planSpecSchema = z
     assumptions: z.array(z.string().min(1)).default([]),
     risks: z.array(z.string().min(1)).default([]),
     successCriteria: z.array(z.string().min(1)).min(1),
+    permissions: permissionSpecSchema.optional(),
+    executionPolicy: executionPolicySchema.optional(),
+    validationCommands: z.array(commandSpecSchema).optional(),
     tasks: z.array(taskSpecSchema).min(1),
     createdAt: isoDateSchema,
   })
@@ -408,6 +628,9 @@ const appSettingsFields = {
   telemetryEnabled: z.boolean(),
   tokenOptimizationMode: tokenOptimizationModeSchema,
   defaultMode: runModeSchema,
+  defaultRoutingProfile: routingProfileSchema,
+  modelPins: z.record(z.string(), modelSelectionSchema),
+  noFallback: z.boolean(),
   defaultModels: z.record(z.string(), modelSelectionSchema),
 };
 
@@ -421,6 +644,9 @@ export const appSettingsSchema = z.object({
   telemetryEnabled: appSettingsFields.telemetryEnabled.default(false),
   tokenOptimizationMode: appSettingsFields.tokenOptimizationMode.default("balanced"),
   defaultMode: appSettingsFields.defaultMode.default("maestro"),
+  defaultRoutingProfile: appSettingsFields.defaultRoutingProfile.default("economical"),
+  modelPins: appSettingsFields.modelPins.default({}),
+  noFallback: appSettingsFields.noFallback.default(false),
   defaultModels: appSettingsFields.defaultModels.default({}),
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -437,6 +663,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   telemetryEnabled: false,
   tokenOptimizationMode: "balanced",
   defaultMode: "maestro",
+  defaultRoutingProfile: "economical",
+  modelPins: {},
+  noFallback: false,
   defaultModels: {
     maestro: { providerId: "anthropic", modelId: "claude-fable-5", effort: "high" },
     analyst: { providerId: "anthropic", modelId: "claude-fable-5", effort: "medium" },

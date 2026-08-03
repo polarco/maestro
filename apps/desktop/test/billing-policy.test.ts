@@ -2,13 +2,11 @@ import { describe, expect, it } from "vitest";
 import { assertProviderUseAllowed } from "../src/main/providers/registry.js";
 
 describe("provider billing policy", () => {
-  it("allows paid APIs only for orchestrator analysis/planning", () => {
-    expect(() => assertProviderUseAllowed("anthropic", "orchestrator")).not.toThrow();
-    expect(() => assertProviderUseAllowed("openai-compatible", "orchestrator")).not.toThrow();
-    for (const use of ["chat", "direct", "subscription-worker"] as const) {
-      expect(() => assertProviderUseAllowed("anthropic", use)).toThrowError(
-        expect.objectContaining({ code: "PAID_API_BLOCKED" }),
-      );
+  it("allows configured API providers through the Maestro-owned tool loop", () => {
+    for (const provider of ["anthropic", "openai-compatible"]) {
+      for (const use of ["orchestrator", "chat", "direct", "subscription-worker"] as const) {
+        expect(() => assertProviderUseAllowed(provider, use)).not.toThrow();
+      }
     }
   });
 

@@ -22,7 +22,7 @@ import { applyTheme, storeTheme } from "@renderer/lib/theme";
 function usable(provider: ProviderSummary, mode: RunMode): boolean {
   if (provider.health.status !== "ready") return false;
   if (mode === "chat" || mode === "agent")
-    return provider.descriptor.kind === "cli" && provider.descriptor.supportsStructuredSessions;
+    return provider.descriptor.kind === "api" || provider.descriptor.supportsStructuredSessions;
   return (
     provider.descriptor.supportsStructuredSessions ||
     provider.models.some((model) => model.capabilities.structuredOutput)

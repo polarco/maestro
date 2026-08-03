@@ -8,6 +8,7 @@ import type {
   ProviderEventSink,
   ProviderHealth,
   ProviderModel,
+  ProviderAdapterCapabilities,
   ProviderInput,
   ProviderSession,
   ProviderSessionSpec,
@@ -19,6 +20,17 @@ export abstract class ApiProviderAdapter implements ProviderAdapter {
   abstract readonly descriptor: ProviderDescriptor;
   abstract readonly configSchema: ProviderConfigSchema;
   protected readonly dependencies: ProviderDependencies;
+  readonly capabilities: ProviderAdapterCapabilities = {
+    nativeLoop: false,
+    tools: true,
+    mcp: false,
+    tokenization: "estimated",
+    promptCache: false,
+    pricing: false,
+    safeRetry: true,
+    checkpointResume: true,
+    steering: false,
+  };
 
   constructor(dependencies: ProviderDependencies) {
     this.dependencies = dependencies;

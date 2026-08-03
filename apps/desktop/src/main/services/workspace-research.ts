@@ -176,6 +176,9 @@ function sensitive(relativePath: string): boolean {
 function readableSource(relativePath: string): boolean {
   if (sensitive(relativePath)) return false;
   const name = path.posix.basename(relativePath).toLowerCase();
+  // Durable instructions are loaded through the trusted AGENTS.md loader,
+  // never mixed into untrusted workspace research excerpts.
+  if (name === "agents.md" || name === "agents.override.md") return false;
   return IMPORTANT_NAMES.has(name) || TEXT_EXTENSIONS.has(path.posix.extname(name));
 }
 
@@ -313,7 +316,7 @@ export function formatWorkspaceResearch(snapshot: WorkspaceResearchSnapshot): st
     )
     .join("\n\n");
   return [
-    "<workspace_research>",
+    '<workspace_research trust="untrusted">',
     `Arquivos: ${snapshot.files}; pastas: ${snapshot.directories}; amostra limitada: ${snapshot.truncated ? "sim" : "não"}.`,
     "Estrutura:",
     snapshot.tree.join("\n"),

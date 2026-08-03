@@ -267,6 +267,23 @@ else if (command[0] === "exec") {
             implementer: { providerId: "codex", modelId: "fixture", effort: "medium" },
             reviewer: { providerId: "codex", modelId: "fixture", effort: "medium" },
           },
+          modelPins: {
+            analyst: {
+              providerId: "openai-compatible",
+              modelId: "fixture-chat",
+              effort: "medium",
+            },
+            researcher: {
+              providerId: "openai-compatible",
+              modelId: "fixture-chat",
+              effort: "medium",
+            },
+            planner: {
+              providerId: "openai-compatible",
+              modelId: "fixture-chat",
+              effort: "medium",
+            },
+          },
         });
       },
       { directory: workspace, codexExecutable: fakeCodex, endpoint: apiFixture.url },
@@ -307,6 +324,55 @@ else if (command[0] === "exec") {
       deleted: true,
     });
 
+    const adaptivePaths = await page.evaluate(async () => {
+      const bootstrap = await window.maestro.bootstrap();
+      const project = bootstrap.projects.find((item) => item.id === bootstrap.activeProjectId)!;
+      const root = project.roots[0]!;
+      const runCase = async (prompt: string) => {
+        const conversation = await window.maestro.createConversation({
+          projectId: project.id,
+          mode: "maestro",
+          sessionKind: "structured",
+          providerId: "openai-compatible",
+          modelId: "fixture-chat",
+          workspaceRootId: root.id,
+        });
+        const sent = await window.maestro.sendMessage({
+          conversationId: conversation.id,
+          content: prompt,
+          mode: "maestro",
+          sessionKind: "structured",
+          providerId: "openai-compatible",
+          modelId: "fixture-chat",
+          effort: "medium",
+          workspaceRootId: root.id,
+          contextItems: [],
+          modelPreference: {
+            mode: "auto",
+            profile: "economical",
+            pin: null,
+            noFallback: false,
+          },
+        });
+        if (!sent.run) throw new Error("Adaptive run was not created");
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const detail = await window.maestro.getRun(sent.run.id);
+          if (detail.run.state === "completed") break;
+          if (detail.run.state === "failed") throw new Error(detail.run.error ?? "Run failed");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        const events = await window.maestro.getRunEvents(sent.run.id, 0, 500);
+        return events.events.find((event) => event.type === "turn.classified")?.data.intent.path;
+      };
+      return [
+        await runCase("Quanto é 2 + 2?"),
+        await runCase("Revise o arquivo sentinel.txt e explique o conteúdo sem alterar nada."),
+      ];
+    });
+    expect(adaptivePaths).toEqual(["answer", "research"]);
+    expect(await readFile(sentinel, "utf8")).toBe("do not change\n");
+
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
     const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
     await page.getByRole("button", { name: /Investigue e corrija os testes que falham/ }).click();
@@ -320,15 +386,13 @@ else if (command[0] === "exec") {
       page.getByText("Qual deve ser a entrega real deste cenário?", { exact: true }).first(),
     ).toBeVisible();
     await page.getByRole("button", { name: "Mudança no produto existente", exact: true }).click();
-    const clarificationComposer = page.getByPlaceholder("Responda às dúvidas do Maestro…");
-    await expect(clarificationComposer).toContainText("Mudança no produto existente");
-    await page.getByRole("button", { name: "Responder", exact: true }).click();
+    await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     await expect(
       page.getByText("Onde o acompanhamento deve aparecer?", { exact: true }).first(),
     ).toBeVisible();
     await page.getByRole("button", { name: "Na conversa principal", exact: true }).click();
-    await page.getByRole("button", { name: "Responder", exact: true }).click();
+    await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     await expect(
       page
@@ -336,14 +400,14 @@ else if (command[0] === "exec") {
         .first(),
     ).toBeVisible();
     await page.getByRole("button", { name: "Persistir após reiniciar", exact: true }).click();
-    await page.getByRole("button", { name: "Responder", exact: true }).click();
+    await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     await expect(
       page.getByText("Quando os agentes podem começar a editar?", { exact: true }).first(),
     ).toBeVisible();
     await expect(page.getByText("Rodada 4 · conforme necessário", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Somente após aprovação", exact: true }).click();
-    await page.getByRole("button", { name: "Responder", exact: true }).click();
+    await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     expect(await waitForRun(page, "awaiting_approval")).toBe(runId);
     await expect(page.getByText("Workspace estudado").first()).toBeVisible();
@@ -397,6 +461,12 @@ else if (command[0] === "exec") {
       .last()
       .click();
     await page.getByRole("button", { name: /Agente Coding agent direto/ }).click();
+    await page.keyboard.press("Control+Shift+M");
+    await expect(page.getByRole("dialog", { name: "Troca rápida de modelo" })).toBeVisible();
+    await page
+      .getByRole("button", { name: /Fixture Codex/ })
+      .first()
+      .click();
     await page
       .getByPlaceholder("Peça uma alteração direta no workspace…")
       .fill("Responda pela fixture direta");

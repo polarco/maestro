@@ -8,11 +8,15 @@ import type {
   PlanSpec,
   RunState,
   TaskState,
+  ContextCheckpoint,
+  TurnIntent,
 } from "./domain.js";
+import type { RecoveryAttempt, RoutingDecision } from "./provider.js";
 
 export type RunEventType =
   | "run.created"
   | "run.state"
+  | "turn.classified"
   | "discovery.started"
   | "workspace.inspected"
   | "discovery.completed"
@@ -23,6 +27,8 @@ export type RunEventType =
   | "brief.created"
   | "analysis.completed"
   | "route.selected"
+  | "route.candidates"
+  | "route.fallback"
   | "plan.created"
   | "plan.approved"
   | "plan.revision_requested"
@@ -41,6 +47,12 @@ export type RunEventType =
   | "file.diff"
   | "approval.required"
   | "approval.resolved"
+  | "checkpoint.created"
+  | "recovery.attempted"
+  | "recovery.completed"
+  | "context.optimized"
+  | "model.switch.pending"
+  | "model.switch.applied"
   | "metric"
   | "log"
   | "error";
@@ -48,6 +60,7 @@ export type RunEventType =
 export interface EventDataMap {
   "run.created": { mode: string; promptPreview: string };
   "run.state": { from: RunState | null; to: RunState; reason?: string };
+  "turn.classified": { turnId: string; intent: TurnIntent };
   "discovery.started": { round: number; message: string };
   "workspace.inspected": {
     files: number;
@@ -64,6 +77,13 @@ export interface EventDataMap {
   "brief.created": { brief: MaestroBrief };
   "analysis.completed": { analysis: AnalysisResult };
   "route.selected": { role: string; selection: ModelSelection; rationale: string };
+  "route.candidates": { decision: RoutingDecision };
+  "route.fallback": {
+    from: ModelSelection;
+    to: ModelSelection;
+    reason: string;
+    checkpointId: string | null;
+  };
   "plan.created": { plan: PlanSpec; markdown: string };
   "plan.approved": { version: number; approvedBy: "user" };
   "plan.revision_requested": { version: number; comment: string };
@@ -149,6 +169,26 @@ export interface EventDataMap {
     approvalId: string;
     decision: "approved" | "denied";
     source: "policy" | "user";
+  };
+  "checkpoint.created": { checkpoint: ContextCheckpoint };
+  "recovery.attempted": { attempt: RecoveryAttempt };
+  "recovery.completed": { attempt: RecoveryAttempt };
+  "context.optimized": {
+    originalTokens: number;
+    sentTokens: number;
+    savedTokens: number;
+    cachedTokens: number;
+    model: ModelSelection;
+    techniques: string[];
+    fidelityPassed: boolean;
+  };
+  "model.switch.pending": {
+    selection: ModelSelection;
+    mode: "next_checkpoint" | "immediate";
+  };
+  "model.switch.applied": {
+    selection: ModelSelection;
+    checkpointId: string | null;
   };
   metric: {
     inputTokens?: number;

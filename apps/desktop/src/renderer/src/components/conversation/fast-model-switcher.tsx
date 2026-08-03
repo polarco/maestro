@@ -29,7 +29,10 @@ interface FastModelSwitcherProps {
   providers: ProviderSummary[];
   connections: ProviderConnectionSummary[];
   current: FastModelSelection | null;
-  onSelect: (selection: FastModelSelection) => void;
+  automatic: boolean;
+  allowImmediate?: boolean;
+  onSelectAuto: () => void;
+  onSelect: (selection: FastModelSelection, timing: "next_checkpoint" | "immediate") => void;
   onClose: () => void;
 }
 
@@ -69,12 +72,16 @@ export function FastModelSwitcher({
   providers,
   connections,
   current,
+  automatic,
+  allowImmediate = false,
+  onSelectAuto,
   onSelect,
   onClose,
 }: FastModelSwitcherProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  const [timing, setTiming] = useState<"next_checkpoint" | "immediate">("next_checkpoint");
   const [recent, setRecent] = useState<string[]>(readRecent);
 
   const options = useMemo<ModelOption[]>(() => {
@@ -147,6 +154,7 @@ export function FastModelSwitcher({
     if (!open) return;
     setQuery("");
     setSelected(0);
+    setTiming("next_checkpoint");
     window.requestAnimationFrame(() => inputRef.current?.focus());
   }, [open]);
 
@@ -156,11 +164,14 @@ export function FastModelSwitcher({
     const nextRecent = [option.key, ...recent.filter((key) => key !== option.key)].slice(0, 8);
     setRecent(nextRecent);
     window.localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(nextRecent));
-    onSelect({
-      providerId: option.providerId,
-      modelId: option.modelId,
-      ...(option.connectionId ? { connectionId: option.connectionId } : {}),
-    });
+    onSelect(
+      {
+        providerId: option.providerId,
+        modelId: option.modelId,
+        ...(option.connectionId ? { connectionId: option.connectionId } : {}),
+      },
+      allowImmediate ? timing : "next_checkpoint",
+    );
   };
 
   useEffect(() => {
@@ -184,10 +195,14 @@ export function FastModelSwitcher({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose, recent, selected, visible]);
+  }, [allowImmediate, open, onClose, recent, selected, timing, visible]);
 
   if (!open) return null;
   const currentKey = current ? optionKey(current) : null;
+  const showAutomatic =
+    mode === "maestro" &&
+    (!query.trim() ||
+      normalize("Auto roteamento rápido econômico profundo").includes(normalize(query.trim())));
 
   return (
     <div
@@ -225,6 +240,38 @@ export function FastModelSwitcher({
         </div>
 
         <div className="max-h-[470px] overflow-y-auto p-2">
+          {showAutomatic ? (
+            <button
+              type="button"
+              className={cn(
+                "mb-1 flex w-full items-center gap-3 rounded-[12px] border px-3 py-2.5 text-left transition-colors",
+                automatic
+                  ? "border-primary/25 bg-primary/[0.09]"
+                  : "border-transparent hover:bg-surface-hover",
+              )}
+              onClick={onSelectAuto}
+            >
+              <span className="grid size-9 shrink-0 place-items-center rounded-[10px] border border-primary/20 bg-primary/[0.08] text-primary-soft">
+                <Zap size={15} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-[12.5px] font-semibold text-text">
+                  Auto
+                  {automatic ? (
+                    <span className="rounded-full border border-success/20 bg-success/[0.07] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-success">
+                      atual
+                    </span>
+                  ) : null}
+                </span>
+                <span className="mt-0.5 block text-[10px] text-text-faint">
+                  Seleciona por capacidade e qualidade; depois otimiza o perfil configurado.
+                </span>
+              </span>
+              <span className="grid size-6 shrink-0 place-items-center text-success">
+                {automatic ? <Check size={13} /> : null}
+              </span>
+            </button>
+          ) : null}
           {visible.length > 0 ? (
             visible.map((option, index) => {
               const isCurrent = option.key === currentKey;
@@ -294,6 +341,33 @@ export function FastModelSwitcher({
         <footer className="flex min-h-11 flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-bg-elevated/55 px-4 py-2 text-[9.5px] text-text-faint">
           <span>↑↓ navegar</span>
           <span>↵ trocar</span>
+          {allowImmediate && mode === "maestro" ? (
+            <span className="flex items-center gap-1 rounded-lg border border-border bg-bg px-1 py-1">
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-2 py-1 transition-colors",
+                  timing === "next_checkpoint"
+                    ? "bg-primary/10 text-primary-soft"
+                    : "hover:text-text",
+                )}
+                onClick={() => setTiming("next_checkpoint")}
+              >
+                próximo checkpoint
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-2 py-1 transition-colors",
+                  timing === "immediate" ? "bg-primary/10 text-primary-soft" : "hover:text-text",
+                )}
+                onClick={() => setTiming("immediate")}
+                title="Cancela a sessão atual e retoma somente se houver checkpoint seguro"
+              >
+                cancelar e continuar
+              </button>
+            </span>
+          ) : null}
           <span className="ml-auto">
             {mode === "chat" ? "Chat sem ferramentas" : "Contexto preservado"}
           </span>

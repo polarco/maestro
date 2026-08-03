@@ -6,7 +6,7 @@ const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "canceled"]);
 export const RUN_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
   discovering: ["awaiting_clarification", "researching", "failed", "canceled"],
   awaiting_clarification: ["discovering", "failed", "canceled"],
-  researching: ["planning", "awaiting_clarification", "failed", "canceled"],
+  researching: ["planning", "awaiting_clarification", "completed", "failed", "canceled"],
   analyzing: ["planning", "researching", "failed", "canceled"],
   planning: ["awaiting_approval", "failed", "canceled"],
   awaiting_approval: ["planning", "queued", "failed", "canceled"],

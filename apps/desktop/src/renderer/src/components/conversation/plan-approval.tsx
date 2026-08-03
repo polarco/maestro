@@ -29,11 +29,27 @@ export function PlanApprovalCard({
   const [expanded, setExpanded] = useState(true);
   const [revising, setRevising] = useState(false);
   const [comment, setComment] = useState("");
+  const [disabledTools, setDisabledTools] = useState<string[]>([]);
+  const [allowCommands, setAllowCommands] = useState(true);
   const plan = detail.plans.at(-1);
   const approve = useMutation({
     mutationFn: () => {
       if (!plan) throw new Error("Plano não encontrado");
-      return api().approveRun(detail.run.id, plan.version);
+      if (!plan.executionPolicy) return api().approveRun(detail.run.id, plan.version);
+      return api().approveRunGranular({
+        runId: detail.run.id,
+        planVersion: plan.version,
+        allowedTools: plan.executionPolicy.allowedTools.filter(
+          (tool) => !disabledTools.includes(tool),
+        ),
+        allowedCommands: allowCommands
+          ? plan.executionPolicy.allowedExecutables.map((command) =>
+              [command.executable, ...command.argsPrefix].join(" "),
+            )
+          : [],
+        writablePaths: plan.executionPolicy.writableRoots,
+        network: plan.executionPolicy.network,
+      });
     },
     onSuccess: (value) => {
       queryClient.setQueryData(["run", detail.run.id], value);
@@ -143,6 +159,42 @@ export function PlanApprovalCard({
                   Edições e testes apenas nas raízes selecionadas. Push, deploy, publicação,
                   segredos e elevação continuam bloqueados.
                 </p>
+                {plan.executionPolicy ? (
+                  <div className="mt-3 space-y-2 border-t border-border pt-3">
+                    {plan.executionPolicy.allowedTools.map((tool) => (
+                      <label
+                        key={tool}
+                        className="flex cursor-pointer items-center gap-2 text-[9px] text-text-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!disabledTools.includes(tool)}
+                          onChange={(event) =>
+                            setDisabledTools((current) =>
+                              event.target.checked
+                                ? current.filter((item) => item !== tool)
+                                : [...current, tool],
+                            )
+                          }
+                        />
+                        <span className="font-mono">{tool}</span>
+                      </label>
+                    ))}
+                    {plan.executionPolicy.allowedExecutables.length > 0 ? (
+                      <label className="flex cursor-pointer items-center gap-2 text-[9px] text-text-muted">
+                        <input
+                          type="checkbox"
+                          checked={allowCommands}
+                          onChange={(event) => setAllowCommands(event.target.checked)}
+                        />
+                        <span>Executar os comandos de validação listados</span>
+                      </label>
+                    ) : null}
+                    <p className="text-[8.5px] leading-4 text-text-faint">
+                      Rede: {plan.executionPolicy.network} · Mutações externas: bloqueadas
+                    </p>
+                  </div>
+                ) : null}
               </div>
             </aside>
           </div>

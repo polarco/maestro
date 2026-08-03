@@ -1638,6 +1638,37 @@ function GeneralSettings({
                 />
               </div>
             </div>
+            <div>
+              <SettingLabel
+                htmlFor="settings-routing-profile"
+                help="Auto sempre filtra primeiro capacidades e qualidade mínimas. Depois, Rápido favorece menor latência, Econômico minimiza custo marginal e Profundo exige qualidade mais alta."
+              >
+                Perfil do roteamento Auto
+              </SettingLabel>
+              <Select
+                id="settings-routing-profile"
+                className="w-full"
+                value={settings.defaultRoutingProfile}
+                onChange={(event) =>
+                  updateSetting(
+                    "defaultRoutingProfile",
+                    event.target.value as AppSettings["defaultRoutingProfile"],
+                  )
+                }
+              >
+                <option value="fast">Rápido</option>
+                <option value="economical">Econômico · recomendado</option>
+                <option value="deep">Profundo</option>
+              </Select>
+            </div>
+            <SettingToggleRow
+              icon={SlidersHorizontal}
+              title="Sem fallback de modelo"
+              description="Mantém o modelo fixado mesmo diante de falha técnica; pode interromper o turno."
+              help="Desative para permitir troca técnica de conta ou modelo depois das tentativas transitórias. Tarefas mutáveis continuam protegidas por checkpoints e idempotência."
+              checked={settings.noFallback}
+              onCheckedChange={(checked) => updateSetting("noFallback", checked)}
+            />
             <div className="md:col-span-2">
               <SettingLabel
                 htmlFor="settings-token-optimization"

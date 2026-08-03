@@ -29,6 +29,7 @@ import type {
   MaestroQuestion,
   RunDetail,
   RunEvent,
+  StructuredQuestionAnswer,
   TaskRun,
 } from "@maestro/contracts";
 import { RUN_LABELS, TASK_LABELS, cn, stateTone } from "@renderer/lib/utils";
@@ -369,12 +370,17 @@ export function MaestroProcess({
   detail,
   events,
   onUseAnswer,
+  onAnswerQuestions,
 }: {
   detail: RunDetail;
   events: RunEvent[];
   onUseAnswer: (answer: string) => void;
+  onAnswerQuestions?: (answers: StructuredQuestionAnswer[]) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [questionAnswers, setQuestionAnswers] = useState<
+    Record<string, { selectedOption?: string; freeText?: string }>
+  >({});
   const data = processData(events);
   const { run } = detail;
   const plan = detail.plans.at(-1);
@@ -385,6 +391,10 @@ export function MaestroProcess({
   const activePlan = state === "planning" || state === "awaiting_approval";
   const activeAgents = ["queued", "running", "validating", "integrating"].includes(state);
   const terminal = ["completed", "failed", "canceled"].includes(state);
+  const allQuestionsAnswered = data.questions.every((question) => {
+    const answer = questionAnswers[question.id];
+    return Boolean(answer?.selectedOption || answer?.freeText?.trim());
+  });
 
   return (
     <section className="mt-6 overflow-hidden rounded-[16px] border border-info/20 bg-surface shadow-[0_18px_50px_rgb(0_0_0/0.13)]">
@@ -514,19 +524,74 @@ export function MaestroProcess({
                           <button
                             key={option}
                             type="button"
-                            className="inline-flex items-center gap-1.5 rounded-[7px] border border-border bg-bg-elevated px-2.5 py-1.5 text-[10px] font-medium text-text-muted hover:border-primary/35 hover:bg-primary/[0.06] hover:text-text"
-                            onClick={() =>
-                              onUseAnswer(`${index + 1}. ${question.question}\n${option}`)
-                            }
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-[7px] border px-2.5 py-1.5 text-[10px] font-medium hover:border-primary/35 hover:bg-primary/[0.06] hover:text-text",
+                              questionAnswers[question.id]?.selectedOption === option
+                                ? "border-primary/40 bg-primary/[0.08] text-text"
+                                : "border-border bg-bg-elevated text-text-muted",
+                            )}
+                            onClick={() => {
+                              if (!onAnswerQuestions) {
+                                onUseAnswer(`${index + 1}. ${question.question}\n${option}`);
+                                return;
+                              }
+                              setQuestionAnswers((current) => ({
+                                ...current,
+                                [question.id]: { ...current[question.id], selectedOption: option },
+                              }));
+                            }}
                           >
                             <Send size={9} /> {option}
                           </button>
                         ))}
                       </div>
                     ) : null}
+                    {onAnswerQuestions ? (
+                      <input
+                        className="mt-2.5 h-9 w-full rounded-[7px] border border-border bg-bg-elevated px-3 text-[10px] text-text outline-none placeholder:text-text-faint focus:border-primary/35"
+                        value={questionAnswers[question.id]?.freeText ?? ""}
+                        onChange={(event) =>
+                          setQuestionAnswers((current) => ({
+                            ...current,
+                            [question.id]: {
+                              ...current[question.id],
+                              freeText: event.target.value,
+                            },
+                          }))
+                        }
+                        placeholder="Resposta livre ou complemento…"
+                      />
+                    ) : null}
                   </div>
                 ))}
               </div>
+              {onAnswerQuestions ? (
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center gap-2 rounded-[8px] bg-primary px-3.5 text-[10px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    disabled={!allQuestionsAnswered}
+                    onClick={() =>
+                      onAnswerQuestions(
+                        data.questions.map((question) => {
+                          const answer = questionAnswers[question.id] ?? {};
+                          return {
+                            questionId: question.id,
+                            ...(answer.selectedOption
+                              ? { selectedOption: answer.selectedOption }
+                              : {}),
+                            ...(answer.freeText?.trim()
+                              ? { freeText: answer.freeText.trim() }
+                              : {}),
+                          };
+                        }),
+                      )
+                    }
+                  >
+                    <Send size={10} /> Enviar respostas e continuar
+                  </button>
+                </div>
+              ) : null}
             </section>
           ) : null}
 

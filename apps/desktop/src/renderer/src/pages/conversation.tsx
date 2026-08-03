@@ -39,6 +39,7 @@ import type {
   RunEvent,
   RunMode,
   SessionKind,
+  StructuredQuestionAnswer,
   WorkspaceContextCandidate,
 } from "@maestro/contracts";
 import { api, getAllRunEvents } from "@renderer/lib/api";
@@ -83,13 +84,7 @@ const modes: Array<{ id: RunMode; label: string; description: string; icon: type
 
 const MAX_COMPOSER_CONTEXT_BYTES = 4 * 1024 * 1024 * 1024;
 
-function fallbackContextWindow(providerId: string, modelId: string): number {
-  const provider = providerId.toLowerCase();
-  const model = modelId.toLowerCase();
-  if (provider.includes("gemini") || model.includes("gemini")) return 1_000_000;
-  if (provider.includes("claude") || provider.includes("anthropic") || model.includes("claude"))
-    return 200_000;
-  if (provider === "codex" || model.includes("codex") || model.includes("gpt")) return 400_000;
+function fallbackContextWindow(): number {
   return 128_000;
 }
 
@@ -136,7 +131,7 @@ const emptyStates: Record<RunMode, { title: string; description: string; suggest
 function providerAllowed(provider: ProviderSummary, mode: RunMode): boolean {
   if (provider.health.status !== "ready") return false;
   if (mode === "chat" || mode === "agent")
-    return provider.descriptor.kind === "cli" && provider.descriptor.supportsStructuredSessions;
+    return provider.descriptor.kind === "api" || provider.descriptor.supportsStructuredSessions;
   return provider.descriptor.supportsStructuredSessions || provider.descriptor.kind === "api";
 }
 
@@ -193,6 +188,9 @@ export function ConversationPage({
   const [modeMenu, setModeMenu] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [fastModelOpen, setFastModelOpen] = useState(false);
+  const [automaticRouting, setAutomaticRouting] = useState(
+    () => window.localStorage.getItem(`maestro.routing-mode:${id}`) !== "manual",
+  );
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const stickToBottom = useRef(true);
 
@@ -385,6 +383,10 @@ export function ConversationPage({
   }, [detail?.conversation.id]);
 
   useEffect(() => {
+    window.localStorage.setItem(`maestro.routing-mode:${id}`, automaticRouting ? "auto" : "manual");
+  }, [automaticRouting, id]);
+
+  useEffect(() => {
     if (!selectedProvider) return;
     if (providerId !== selectedProvider.descriptor.id)
       setProviderId(selectedProvider.descriptor.id);
@@ -431,9 +433,10 @@ export function ConversationPage({
     return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
   }, [latestRun?.id, liveEvents, runEventsQuery.data?.events]);
   const awaitingClarification = runQuery.data?.run.state === "awaiting_clarification";
-  const modelSelectionLocked = Boolean(
-    awaitingClarification || detail?.messages.some((message) => message.status === "streaming"),
-  );
+  const activeRunForSwitch = runQuery.data
+    ? !["completed", "failed", "canceled"].includes(runQuery.data.run.state)
+    : false;
+  const modelSelectionLocked = false;
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -460,6 +463,17 @@ export function ConversationPage({
         setView({ type: "terminal" });
         return null;
       }
+      const forkCommand = content.trim().match(/^\/fork\b\s*(.*)$/i);
+      if (mode === "maestro" && forkCommand) {
+        const fork = await api().forkConversation({
+          conversationId: id,
+          ...(forkCommand[1]?.trim() ? { title: forkCommand[1].trim() } : {}),
+        });
+        setContent("");
+        setView({ type: "conversation", id: fork.id });
+        void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+        return null;
+      }
       if (!selectedProvider || !selectedModel)
         throw new Error("Nenhum provedor compatível está pronto.");
       return api().sendMessage({
@@ -475,6 +489,25 @@ export function ConversationPage({
           ? runQuery.data!.run.spec.workspaceRootIds[0]!
           : workspaceRootId,
         contextItems: contextAssets.map((asset) => ({ type: "asset" as const, assetId: asset.id })),
+        ...(mode === "maestro"
+          ? {
+              modelPreference: {
+                mode: automaticRouting ? ("auto" as const) : ("manual" as const),
+                profile: bootstrap.settings.defaultRoutingProfile,
+                pin: automaticRouting
+                  ? null
+                  : {
+                      providerId: selectedProvider.descriptor.id,
+                      ...(selectedConnection
+                        ? { connectionId: selectedConnection.connection.id }
+                        : {}),
+                      modelId: selectedModel.id,
+                      effort,
+                    },
+                noFallback: bootstrap.settings.noFallback,
+              },
+            }
+          : {}),
       });
     },
     onSuccess: (value) => {
@@ -498,6 +531,19 @@ export function ConversationPage({
       setContextError(null);
       stickToBottom.current = true;
       void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+  });
+
+  const answerQuestions = useMutation({
+    mutationFn: (answers: StructuredQuestionAnswer[]) => {
+      if (!runQuery.data) throw new Error("Execução não encontrada.");
+      return api().answerQuestions({ runId: runQuery.data.run.id, answers });
+    },
+    onSuccess: (value) => {
+      queryClient.setQueryData(["run", value.run.id], value);
+      void queryClient.invalidateQueries({ queryKey: ["conversation", id] });
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      stickToBottom.current = true;
     },
   });
 
@@ -566,7 +612,7 @@ export function ConversationPage({
         (selectedProvider.descriptor.kind !== "cli" || selectedConnection))),
   );
   const currentFastSelection: FastModelSelection | null =
-    selectedProvider && selectedModel
+    selectedProvider && selectedModel && (mode !== "maestro" || !automaticRouting)
       ? {
           providerId: selectedProvider.descriptor.id,
           modelId: selectedModel.id,
@@ -575,8 +621,7 @@ export function ConversationPage({
       : null;
   const modelContextWindow =
     selectedProvider && selectedModel
-      ? (selectedModel.capabilities.contextWindow ??
-        fallbackContextWindow(selectedProvider.descriptor.id, selectedModel.id))
+      ? (selectedModel.capabilities.contextWindow ?? fallbackContextWindow())
       : 128_000;
   const estimatedConversationTokens = Math.ceil(
     (detail.messages.reduce((total, message) => total + message.content.length, 0) +
@@ -592,6 +637,7 @@ export function ConversationPage({
   );
   const pendingModelSwitch = Boolean(
     detail.messages.some((message) => message.status === "completed") &&
+    (mode !== "maestro" || !automaticRouting) &&
     selectedProvider &&
     selectedModel &&
     detail.conversation.providerId &&
@@ -708,6 +754,7 @@ export function ConversationPage({
                 );
                 window.requestAnimationFrame(() => composerRef.current?.focus());
               }}
+              onAnswerQuestions={(answers) => answerQuestions.mutate(answers)}
             />
           ) : null}
 
@@ -811,6 +858,8 @@ export function ConversationPage({
                         )}
                         onClick={() => {
                           setMode(item.id);
+                          if (item.id === "maestro" && mode !== "maestro")
+                            setAutomaticRouting(true);
                           setSessionKind("structured");
                           setModeMenu(false);
                           setFastModelOpen(false);
@@ -855,7 +904,7 @@ export function ConversationPage({
                 {sessionKind === "pty"
                   ? "Terminal interativo"
                   : selectedProvider && selectedModel
-                    ? `${selectedProvider.descriptor.name} · ${selectedModel.name}`
+                    ? `${mode === "maestro" && automaticRouting ? "Auto · " : ""}${selectedProvider.descriptor.name} · ${selectedModel.name}`
                     : "Configurar execução"}
               </span>
               <ChevronDown
@@ -973,6 +1022,7 @@ export function ConversationPage({
                           className="w-full"
                           value={selectedProvider?.descriptor.id ?? ""}
                           onChange={(event) => {
+                            if (mode === "maestro") setAutomaticRouting(false);
                             setProviderId(event.target.value);
                             setProviderConnectionId("");
                             setModelId("");
@@ -998,7 +1048,10 @@ export function ConversationPage({
                           <Select
                             className="w-full"
                             value={selectedConnection?.connection.id ?? ""}
-                            onChange={(event) => setProviderConnectionId(event.target.value)}
+                            onChange={(event) => {
+                              if (mode === "maestro") setAutomaticRouting(false);
+                              setProviderConnectionId(event.target.value);
+                            }}
                             aria-label="Conta por assinatura"
                           >
                             {availableConnections.length ? (
@@ -1020,7 +1073,10 @@ export function ConversationPage({
                         <Select
                           className="w-full"
                           value={selectedModel?.id ?? ""}
-                          onChange={(event) => setModelId(event.target.value)}
+                          onChange={(event) => {
+                            if (mode === "maestro") setAutomaticRouting(false);
+                            setModelId(event.target.value);
+                          }}
                           aria-label="Modelo"
                         >
                           {selectableModels.map((model) => (
@@ -1038,7 +1094,10 @@ export function ConversationPage({
                           <Select
                             className="w-full"
                             value={effort}
-                            onChange={(event) => setEffort(event.target.value as Effort)}
+                            onChange={(event) => {
+                              if (mode === "maestro") setAutomaticRouting(false);
+                              setEffort(event.target.value as Effort);
+                            }}
                             aria-label="Nível de esforço"
                           >
                             {selectedModel!.capabilities.reasoningEffort.map((value) => (
@@ -1051,7 +1110,7 @@ export function ConversationPage({
                       ) : null}
                       {selectedProvider?.descriptor.kind === "api" ? (
                         <div className="flex items-end pb-1">
-                          <Badge tone="warning">API · somente orquestrador</Badge>
+                          <Badge tone="warning">API · loop de ferramentas Maestro</Badge>
                         </div>
                       ) : null}
                     </>
@@ -1202,7 +1261,9 @@ export function ConversationPage({
                 <Settings2 size={14} />
               </Button>
               <span className="ml-1 hidden text-[10px] text-text-faint sm:inline">
-                Enter envia · Shift Enter quebra linha
+                {mode === "maestro"
+                  ? "/plan · /review · /compact · /model · /fork · /status"
+                  : "Enter envia · Shift Enter quebra linha"}
               </span>
               <Button
                 className="ml-auto"
@@ -1289,8 +1350,16 @@ export function ConversationPage({
         providers={allowedProviders}
         connections={bootstrap.providerConnections}
         current={currentFastSelection}
+        automatic={mode === "maestro" && automaticRouting}
+        allowImmediate={Boolean(activeRunForSwitch)}
+        onSelectAuto={() => {
+          setAutomaticRouting(true);
+          setFastModelOpen(false);
+          setConfigurationOpen(false);
+          setModeMenu(false);
+        }}
         onClose={() => setFastModelOpen(false)}
-        onSelect={(selection) => {
+        onSelect={(selection, timing) => {
           const provider = allowedProviders.find(
             (candidate) => candidate.descriptor.id === selection.providerId,
           );
@@ -1303,11 +1372,28 @@ export function ConversationPage({
             (candidate) => candidate.id === selection.modelId,
           );
           setProviderId(selection.providerId);
+          if (mode === "maestro") setAutomaticRouting(false);
           setProviderConnectionId(selection.connectionId ?? "");
           setModelId(selection.modelId);
           const efforts = model?.capabilities.reasoningEffort ?? [];
           if (efforts.length > 0 && !efforts.includes(effort))
             setEffort(efforts.includes("medium") ? "medium" : efforts[0]!);
+          if (activeRunForSwitch && runQuery.data)
+            void api()
+              .switchModel({
+                runId: runQuery.data.run.id,
+                selection: {
+                  providerId: selection.providerId,
+                  modelId: selection.modelId,
+                  ...(selection.connectionId ? { connectionId: selection.connectionId } : {}),
+                  effort,
+                },
+                timing,
+                noFallback: bootstrap.settings.noFallback,
+              })
+              .then(() =>
+                queryClient.invalidateQueries({ queryKey: ["run", runQuery.data.run.id] }),
+              );
           setFastModelOpen(false);
           setConfigurationOpen(false);
           setModeMenu(false);

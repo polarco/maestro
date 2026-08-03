@@ -45,13 +45,8 @@ function isCliProviderId(value: string): value is (typeof CLI_PROVIDER_IDS)[numb
 }
 
 export function assertProviderUseAllowed(providerId: string, use: ProviderUse): void {
-  if (!isCliProviderId(providerId) && use !== "orchestrator") {
-    throw new MaestroError(
-      "PAID_API_BLOCKED",
-      "APIs pagas são permitidas somente para análise e planejamento do orquestrador. Escolha uma conta Claude/Codex por assinatura.",
-      { recoverable: true },
-    );
-  }
+  if (!providerId.trim() || !use)
+    throw new MaestroError("PROVIDER_NOT_FOUND", "Provedor inválido.");
 }
 
 export class ProviderRegistry {
@@ -126,13 +121,13 @@ export class ProviderRegistry {
     };
   }
 
+  supportsChat(selection: ModelSelection, use: ProviderUse): boolean {
+    return "chat" in this.resolve(selection, use).adapter;
+  }
+
   prepareSubscription(selection: ModelSelection): ModelSelection {
     if (!isCliProviderId(selection.providerId)) {
-      throw new MaestroError(
-        "PAID_API_BLOCKED",
-        "Tarefas de execução só podem usar contas Claude/Codex por assinatura.",
-        { recoverable: true },
-      );
+      return selection;
     }
     const summary = selection.connectionId
       ? this.#connectionSummaries.get(selection.connectionId)
@@ -146,6 +141,7 @@ export class ProviderRegistry {
     }
     return {
       providerId: selection.providerId,
+      connectionId: summary.connection.id,
       modelId: selection.modelId,
       ...(selection.effort ? { effort: selection.effort } : {}),
     };

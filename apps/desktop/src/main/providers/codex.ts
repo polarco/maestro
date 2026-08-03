@@ -4,6 +4,7 @@ import type {
   Effort,
   NewRunEvent,
   ProviderAdapter,
+  ProviderAdapterCapabilities,
   ProviderConfigSchema,
   ProviderDescriptor,
   ProviderEventSink,
@@ -97,7 +98,7 @@ export function codexModelSupportsVision(entry: JsonRecord): boolean {
 }
 
 function restrictedThreadConfig(spec: ProviderSessionSpec): JsonRecord | null {
-  if (spec.tools.length > 0) return null;
+  const shellAllowed = spec.permissions.runCommands && spec.tools.includes("command.run");
   return {
     web_search: "disabled",
     mcp_servers: {},
@@ -107,14 +108,14 @@ function restrictedThreadConfig(spec: ProviderSessionSpec): JsonRecord | null {
       computer_use: false,
       image_generation: false,
       multi_agent: false,
-      shell_tool: false,
-      unified_exec: false,
+      shell_tool: shellAllowed,
+      unified_exec: shellAllowed,
     },
   };
 }
 
 function restrictedExecArgs(spec: ProviderSessionSpec): string[] {
-  if (spec.tools.length > 0) return [];
+  if (spec.mode === "agent" && spec.permissions.runCommands) return [];
   return [
     "--ignore-user-config",
     "--disable",
@@ -134,6 +135,29 @@ function restrictedExecArgs(spec: ProviderSessionSpec): string[] {
   ];
 }
 
+function sandboxPolicy(spec: ProviderSessionSpec): JsonRecord {
+  if (spec.permissions.writeWorkspace) {
+    return {
+      type: "workspaceWrite",
+      writableRoots: spec.workspaceRoots,
+      readOnlyAccess: {
+        type: "restricted",
+        includePlatformDefaults: true,
+        readableRoots: spec.workspaceRoots,
+      },
+      networkAccess: spec.permissions.network,
+    };
+  }
+  return {
+    type: "readOnly",
+    access: {
+      type: "restricted",
+      includePlatformDefaults: true,
+      readableRoots: spec.workspaceRoots,
+    },
+  };
+}
+
 function nestedString(value: unknown, keys: string[]): string | null {
   let cursor: unknown = value;
   for (const key of keys) {
@@ -144,6 +168,17 @@ function nestedString(value: unknown, keys: string[]): string | null {
 }
 
 export class CodexAdapter implements ProviderAdapter {
+  readonly capabilities: ProviderAdapterCapabilities = {
+    nativeLoop: true,
+    tools: true,
+    mcp: true,
+    tokenization: "native",
+    promptCache: true,
+    pricing: false,
+    safeRetry: false,
+    checkpointResume: true,
+    steering: true,
+  };
   readonly descriptor: ProviderDescriptor = {
     id: "codex",
     name: "Codex",
@@ -362,7 +397,7 @@ export class CodexAdapter implements ProviderAdapter {
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
-        sandbox: spec.permissions.writeWorkspace ? "workspace-write" : "read-only",
+        sandboxPolicy: sandboxPolicy(spec),
         ...(config ? { config } : {}),
         ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
         ephemeral: false,
@@ -413,7 +448,7 @@ export class CodexAdapter implements ProviderAdapter {
         ...(spec.model !== "default" ? { model: spec.model } : {}),
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         approvalPolicy: "never",
-        sandbox: spec.permissions.writeWorkspace ? "workspace-write" : "read-only",
+        sandboxPolicy: sandboxPolicy(spec),
         ...(config ? { config } : {}),
         ...(spec.systemPrompt ? { developerInstructions: spec.systemPrompt } : {}),
       });
@@ -447,6 +482,8 @@ export class CodexAdapter implements ProviderAdapter {
         ...(record.spec.cwd ? { cwd: record.spec.cwd } : {}),
         ...(record.spec.model !== "default" ? { model: record.spec.model } : {}),
         ...(record.spec.effort !== "none" ? { effort: record.spec.effort } : {}),
+        approvalPolicy: "never",
+        sandboxPolicy: sandboxPolicy(record.spec),
         ...(record.spec.outputSchema ? { outputSchema: record.spec.outputSchema } : {}),
       });
       record.currentTurnId = nestedString(result, ["turn", "id"]);

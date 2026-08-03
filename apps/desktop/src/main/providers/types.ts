@@ -15,3 +15,8 @@ export function configString(config: ProviderConfig, key: string, fallback = "")
   const value = config[key];
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
+
+export function configNumber(config: ProviderConfig, key: string): number | null {
+  const value = config[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}

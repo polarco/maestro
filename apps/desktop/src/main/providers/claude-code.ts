@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import type {
   Effort,
   ProviderAdapter,
+  ProviderAdapterCapabilities,
   ProviderConfigSchema,
   ProviderDescriptor,
   ProviderEventSink,
@@ -67,6 +68,17 @@ function model(id: string, name: string, isDefault = false): ProviderModel {
 }
 
 export class ClaudeCodeAdapter implements ProviderAdapter {
+  readonly capabilities: ProviderAdapterCapabilities = {
+    nativeLoop: true,
+    tools: true,
+    mcp: true,
+    tokenization: "native",
+    promptCache: true,
+    pricing: false,
+    safeRetry: false,
+    checkpointResume: true,
+    steering: true,
+  };
   readonly descriptor: ProviderDescriptor = {
     id: "claude-code",
     name: "Claude Code",

@@ -1,18 +1,27 @@
 import type {
   AppSettings,
   Attachment,
+  ContextCheckpoint,
   ContextAssetChangeState,
   ContextAssetKind,
   ContextAssetSource,
   ContextAssetStatus,
   PlanSpec,
+  ExecutionPolicy,
+  ModelPreference,
+  ModelSelection,
+  RecoveryAttempt,
+  RoutingDecision,
   RunSpec,
   TaskSpec,
+  ToolCall,
+  TurnIntent,
 } from "@maestro/contracts";
 import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -295,6 +304,240 @@ export const runEvents = sqliteTable(
   ],
 );
 
+export const turns = sqliteTable(
+  "turns",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    sequence: integer("sequence").notNull(),
+    state: text("state", {
+      enum: [
+        "classified",
+        "running",
+        "awaiting_question",
+        "awaiting_approval",
+        "completed",
+        "failed",
+        "canceled",
+      ],
+    }).notNull(),
+    intent: text("intent", { mode: "json" }).$type<TurnIntent>().notNull(),
+    policy: text("policy", { mode: "json" }).$type<ExecutionPolicy>().notNull(),
+    modelPreference: text("model_preference", { mode: "json" }).$type<ModelPreference>().notNull(),
+    selectedModel: text("selected_model", { mode: "json" }).$type<ModelSelection | null>(),
+    inputMessageId: text("input_message_id").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    outputMessageId: text("output_message_id").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    completedAt: text("completed_at"),
+    error: text("error"),
+  },
+  (table) => [
+    uniqueIndex("turns_conversation_sequence_uidx").on(table.conversationId, table.sequence),
+    index("turns_run_state_idx").on(table.runId, table.state),
+  ],
+);
+
+export const turnItems = sqliteTable(
+  "turn_items",
+  {
+    id: text("id").primaryKey(),
+    turnId: text("turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    sequence: integer("sequence").notNull(),
+    kind: text("kind", {
+      enum: [
+        "message",
+        "question",
+        "plan",
+        "tool_call",
+        "tool_result",
+        "checkpoint",
+        "route",
+        "metric",
+        "error",
+      ],
+    }).notNull(),
+    payload: text("payload", { mode: "json" }).$type<unknown>().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("turn_items_turn_sequence_uidx").on(table.turnId, table.sequence)],
+);
+
+export const toolCalls = sqliteTable(
+  "tool_calls",
+  {
+    id: text("id").primaryKey(),
+    turnId: text("turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    toolName: text("tool_name").notNull(),
+    input: text("input", { mode: "json" }).$type<unknown>().notNull(),
+    status: text("status").$type<ToolCall["status"]>().notNull(),
+    mutability: text("mutability").$type<ToolCall["mutability"]>().notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    checkpointId: text("checkpoint_id"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [
+    uniqueIndex("tool_calls_idempotency_uidx").on(table.idempotencyKey),
+    index("tool_calls_turn_status_idx").on(table.turnId, table.status),
+  ],
+);
+
+export const toolResults = sqliteTable(
+  "tool_results",
+  {
+    id: text("id").primaryKey(),
+    toolCallId: text("tool_call_id")
+      .notNull()
+      .references(() => toolCalls.id, { onDelete: "cascade" }),
+    output: text("output", { mode: "json" }).$type<unknown>(),
+    isError: integer("is_error", { mode: "boolean" }).notNull(),
+    error: text("error"),
+    artifactRef: text("artifact_ref"),
+    truncated: integer("truncated", { mode: "boolean" }).notNull(),
+    contentHash: text("content_hash"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("tool_results_call_uidx").on(table.toolCallId)],
+);
+
+export const approvals = sqliteTable(
+  "approvals",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    turnId: text("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    planVersion: integer("plan_version"),
+    kind: text("kind", { enum: ["plan", "command", "file", "tool", "network"] }).notNull(),
+    status: text("status", { enum: ["pending", "approved", "denied", "superseded"] }).notNull(),
+    scope: text("scope", { mode: "json" }).$type<ExecutionPolicy>().notNull(),
+    scopeHash: text("scope_hash").notNull(),
+    requestedAt: text("requested_at").notNull(),
+    resolvedAt: text("resolved_at"),
+    resolution: text("resolution"),
+  },
+  (table) => [index("approvals_run_status_idx").on(table.runId, table.status)],
+);
+
+export const contextCheckpoints = sqliteTable(
+  "context_checkpoints",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    turnId: text("turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    checkpoint: text("checkpoint", { mode: "json" }).$type<ContextCheckpoint>().notNull(),
+    safeToResume: integer("safe_to_resume", { mode: "boolean" }).notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("checkpoints_turn_version_uidx").on(table.turnId, table.version),
+    index("checkpoints_conversation_created_idx").on(table.conversationId, table.createdAt),
+  ],
+);
+
+export const routingDecisions = sqliteTable(
+  "routing_decisions",
+  {
+    id: text("id").primaryKey(),
+    turnId: text("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    role: text("role").notNull(),
+    providerId: text("provider_id").notNull(),
+    connectionId: text("connection_id"),
+    modelId: text("model_id").notNull(),
+    decision: text("decision", { mode: "json" }).$type<RoutingDecision>().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("routing_decisions_run_created_idx").on(table.runId, table.createdAt)],
+);
+
+export const recoveryAttempts = sqliteTable(
+  "recovery_attempts",
+  {
+    id: text("id").primaryKey(),
+    turnId: text("turn_id")
+      .notNull()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    attempt: text("attempt", { mode: "json" }).$type<RecoveryAttempt>().notNull(),
+    createdAt: text("created_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [index("recovery_attempts_turn_idx").on(table.turnId, table.createdAt)],
+);
+
+export const toolArtifacts = sqliteTable(
+  "tool_artifacts",
+  {
+    id: text("id").primaryKey(),
+    toolCallId: text("tool_call_id")
+      .notNull()
+      .references(() => toolCalls.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    contentHash: text("content_hash").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("tool_artifacts_call_idx").on(table.toolCallId)],
+);
+
+export const pendingModelSwitches = sqliteTable("pending_model_switches", {
+  runId: text("run_id")
+    .primaryKey()
+    .references(() => runs.id, { onDelete: "cascade" }),
+  selection: text("selection", { mode: "json" }).$type<ModelSelection>().notNull(),
+  timing: text("timing", { enum: ["next_checkpoint", "immediate"] }).notNull(),
+  noFallback: integer("no_fallback", { mode: "boolean" }).notNull(),
+  requestedAt: text("requested_at").notNull(),
+});
+
+export const modelTelemetry = sqliteTable(
+  "model_telemetry",
+  {
+    key: text("key").primaryKey(),
+    providerId: text("provider_id").notNull(),
+    connectionId: text("connection_id"),
+    modelId: text("model_id").notNull(),
+    successes: integer("successes").notNull(),
+    failures: integer("failures").notNull(),
+    consecutiveFailures: integer("consecutive_failures").notNull(),
+    latencyEwmaMs: real("latency_ewma_ms"),
+    quotaRemaining: real("quota_remaining"),
+    quotaLimit: real("quota_limit"),
+    activeSessions: integer("active_sessions").notNull(),
+    concurrencyLimit: integer("concurrency_limit"),
+    cooldownUntil: text("cooldown_until"),
+    circuitState: text("circuit_state", { enum: ["closed", "open", "half_open"] }).notNull(),
+    cachedInputTokens: integer("cached_input_tokens").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    costUsd: real("cost_usd").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("model_telemetry_provider_model_idx").on(table.providerId, table.modelId)],
+);
+
 export const appMetadata = sqliteTable("app_metadata", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -358,6 +601,17 @@ export const schema = {
   plans,
   taskRuns,
   runEvents,
+  turns,
+  turnItems,
+  toolCalls,
+  toolResults,
+  approvals,
+  contextCheckpoints,
+  routingDecisions,
+  recoveryAttempts,
+  toolArtifacts,
+  pendingModelSwitches,
+  modelTelemetry,
   appMetadata,
   settings,
   providerConfigs,

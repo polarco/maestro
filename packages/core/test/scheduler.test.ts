@@ -93,4 +93,18 @@ describe("DAG scheduler", () => {
       ]),
     );
   });
+
+  it("resumes a DAG without dispatching tasks already checkpointed as completed", async () => {
+    const executed: string[] = [];
+    const scheduler = new DagScheduler({
+      globalConcurrency: 2,
+      initialStates: new Map([["a", "completed"]]),
+    });
+    const result = await scheduler.run([task("a"), task("b", ["a"])], (item) => {
+      executed.push(item.id);
+      return Promise.resolve({ state: "completed" });
+    });
+    expect(executed).toEqual(["b"]);
+    expect(result.completed).toEqual(["a", "b"]);
+  });
 });

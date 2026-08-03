@@ -122,31 +122,46 @@ export class GitService {
     const worktreeRoot = path.join(this.#worktreeBase, runPart, "tasks", taskPart);
     const branch = `maestro/${runPart}/task/${taskPart}`;
     await mkdir(path.dirname(worktreeRoot), { recursive: true });
-    const add = await this.#serializeWorktreeMutation(() =>
-      this.#git(
-        [
-          "-C",
-          context.repositoryRoot,
-          "worktree",
-          "add",
-          "-b",
-          branch,
-          worktreeRoot,
-          context.baseHead,
-        ],
-        context.repositoryRoot,
-        true,
-        60_000,
-      ),
-    );
-    if (!add.ok) {
+    const existing = await this.#registeredWorktree(context.repositoryRoot, branch);
+    if (existing && path.resolve(existing) !== path.resolve(worktreeRoot))
       throw new MaestroError(
-        "WORKTREE_CREATE_FAILED",
-        add.stderr || add.stdout || `Falha ao criar worktree ${taskId}.`,
-        { recoverable: true },
+        "WORKTREE_SCOPE_MISMATCH",
+        `O branch ${branch} está associado a outra worktree; a retomada foi bloqueada.`,
+        { recoverable: true, detail: { expected: worktreeRoot, actual: existing } },
       );
+    if (!existing) {
+      const branchExists = (
+        await this.#git(
+          ["-C", context.repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          context.repositoryRoot,
+          true,
+        )
+      ).ok;
+      const args = branchExists
+        ? ["-C", context.repositoryRoot, "worktree", "add", worktreeRoot, branch]
+        : [
+            "-C",
+            context.repositoryRoot,
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            worktreeRoot,
+            context.baseHead,
+          ];
+      const add = await this.#serializeWorktreeMutation(() =>
+        this.#git(args, context.repositoryRoot, true, 60_000),
+      );
+      if (!add.ok) {
+        throw new MaestroError(
+          "WORKTREE_CREATE_FAILED",
+          add.stderr || add.stdout || `Falha ao criar worktree ${taskId}.`,
+          { recoverable: true },
+        );
+      }
     }
     for (const commit of dependencyCommits) {
+      if (await this.#containsCommit(worktreeRoot, commit)) continue;
       const cherryPick = await this.#git(
         ["-C", worktreeRoot, "cherry-pick", commit],
         worktreeRoot,
@@ -203,38 +218,64 @@ export class GitService {
     ).stdout;
   }
 
+  async branchHead(context: RunGitContext, branch: string): Promise<string | null> {
+    const prefix = `maestro/${safeRefPart(context.runId)}/task/`;
+    if (!branch.startsWith(prefix)) return null;
+    const result = await this.#git(
+      ["-C", context.repositoryRoot, "rev-parse", "--verify", branch],
+      context.repositoryRoot,
+      true,
+    );
+    return result.ok ? result.stdout : null;
+  }
+
   async integrate(context: RunGitContext, commits: readonly string[]): Promise<IntegrationResult> {
     const runPart = safeRefPart(context.runId);
     const integrationRoot = path.join(this.#worktreeBase, runPart, "integration");
     const branch = `maestro/${runPart}/integration`;
     await mkdir(path.dirname(integrationRoot), { recursive: true });
-    const add = await this.#serializeWorktreeMutation(() =>
-      this.#git(
-        [
-          "-C",
-          context.repositoryRoot,
-          "worktree",
-          "add",
-          "-b",
-          branch,
-          integrationRoot,
-          context.baseHead,
-        ],
-        context.repositoryRoot,
-        true,
-        60_000,
-      ),
-    );
-    if (!add.ok) {
+    const existing = await this.#registeredWorktree(context.repositoryRoot, branch);
+    if (existing && path.resolve(existing) !== path.resolve(integrationRoot))
       throw new MaestroError(
-        "INTEGRATION_WORKTREE_FAILED",
-        add.stderr || "Não foi possível criar a worktree de integração.",
-        { recoverable: true },
+        "WORKTREE_SCOPE_MISMATCH",
+        `O branch ${branch} está associado a outra worktree; a integração foi bloqueada.`,
+        { recoverable: true, detail: { expected: integrationRoot, actual: existing } },
       );
+    if (!existing) {
+      const branchExists = (
+        await this.#git(
+          ["-C", context.repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          context.repositoryRoot,
+          true,
+        )
+      ).ok;
+      const args = branchExists
+        ? ["-C", context.repositoryRoot, "worktree", "add", integrationRoot, branch]
+        : [
+            "-C",
+            context.repositoryRoot,
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            integrationRoot,
+            context.baseHead,
+          ];
+      const add = await this.#serializeWorktreeMutation(() =>
+        this.#git(args, context.repositoryRoot, true, 60_000),
+      );
+      if (!add.ok) {
+        throw new MaestroError(
+          "INTEGRATION_WORKTREE_FAILED",
+          add.stderr || "Não foi possível criar a worktree de integração.",
+          { recoverable: true },
+        );
+      }
     }
     const integrationPath = this.#scopedPath(context, integrationRoot);
 
     for (const commit of commits) {
+      if (await this.#containsCommit(integrationRoot, commit)) continue;
       const result = await this.#git(
         ["-C", integrationRoot, "cherry-pick", commit],
         integrationRoot,
@@ -347,6 +388,36 @@ export class GitService {
       );
     }
     return path.join(worktreeRoot, relative);
+  }
+
+  async #registeredWorktree(repositoryRoot: string, branch: string): Promise<string | null> {
+    const result = await this.#git(
+      ["-C", repositoryRoot, "worktree", "list", "--porcelain", "-z"],
+      repositoryRoot,
+      true,
+    );
+    if (!result.ok) return null;
+    let worktree: string | null = null;
+    for (const field of result.stdout.split("\0")) {
+      if (field.startsWith("worktree ")) worktree = field.slice("worktree ".length);
+      else if (field === `branch refs/heads/${branch}` && worktree) return worktree;
+    }
+    return null;
+  }
+
+  async #containsCommit(worktreeRoot: string, commit: string): Promise<boolean> {
+    const ancestor = await this.#git(
+      ["-C", worktreeRoot, "merge-base", "--is-ancestor", commit, "HEAD"],
+      worktreeRoot,
+      true,
+    );
+    if (ancestor.ok) return true;
+    const equivalent = await this.#git(
+      ["-C", worktreeRoot, "cherry", "HEAD", commit],
+      worktreeRoot,
+      true,
+    );
+    return equivalent.ok && equivalent.stdout.split("\n").some((line) => line.startsWith("- "));
   }
 
   #serializeWorktreeMutation<T>(operation: () => Promise<T>): Promise<T> {

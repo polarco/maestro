@@ -5,16 +5,21 @@ import {
   DEFAULT_APP_SETTINGS,
   appSettingsSchema,
   type AppSettings,
+  type AnswerQuestionsInput,
   type BootstrapPayload,
+  type CompactTurnInput,
   type ConfigureProviderInput,
   type ContextAssetSummary,
   type ContextProcessingEvent,
+  type ContextCheckpoint,
   type CreateProviderConnectionInput,
   type Conversation,
   type ConversationDetail,
   type CreateConversationInput,
   type CreateProjectInput,
   type EventPage,
+  type ForkConversationInput,
+  type GranularApprovalInput,
   type PlanSpec,
   type Project,
   type LocalModelPackageState,
@@ -28,6 +33,9 @@ import {
   type PrepareWorkspaceContextInput,
   type SearchWorkspaceContextInput,
   type StageRecordedAudioInput,
+  type SteerTurnInput,
+  type SwitchModelInput,
+  type TurnStatusInspection,
   type WorkspaceContextCandidate,
   type TerminalEvent,
   type TerminalSessionDto,
@@ -534,6 +542,88 @@ export class ApplicationService {
 
   cancelRun(runId: string): Promise<RunDetail> {
     return this.orchestration.cancel(runId);
+  }
+
+  approveRunGranular(input: GranularApprovalInput): Promise<RunDetail> {
+    return this.orchestration.approveGranular(input);
+  }
+
+  steerTurn(input: SteerTurnInput): Promise<void> {
+    return this.orchestration.steer(input.runId, input.content);
+  }
+
+  answerQuestions(input: AnswerQuestionsInput): Promise<RunDetail> {
+    return this.orchestration.answerQuestions(input);
+  }
+
+  switchModel(input: SwitchModelInput): Promise<TurnStatusInspection> {
+    return this.orchestration.switchModel(input);
+  }
+
+  retryRun(runId: string): Promise<RunDetail> {
+    return this.orchestration.retry(runId);
+  }
+
+  replanRun(runId: string, reason: string): Promise<PlanSpec> {
+    return this.orchestration.replan(runId, reason);
+  }
+
+  compactContext(input: CompactTurnInput): Promise<ContextCheckpoint> {
+    return this.orchestration.compactContext(input);
+  }
+
+  inspectRoute(runId: string): Promise<TurnStatusInspection> {
+    return this.orchestration.inspectRoute(runId);
+  }
+
+  async forkConversation(input: ForkConversationInput): Promise<Conversation> {
+    const source = await this.repository.getConversation(input.conversationId);
+    const checkpoint = input.checkpointId
+      ? await this.repository.getCheckpoint(input.checkpointId)
+      : await this.repository.getLatestCheckpoint({
+          conversationId: source.id,
+          safeOnly: true,
+        });
+    if (checkpoint && checkpoint.conversationId !== source.id)
+      throw new MaestroError(
+        "CHECKPOINT_CONVERSATION_MISMATCH",
+        "O checkpoint não pertence à conversa selecionada.",
+      );
+    if (!source.workspaceRootId)
+      throw new MaestroError(
+        "WORKSPACE_ROOT_REQUIRED",
+        "A conversa de origem não possui uma raiz de workspace para o fork.",
+      );
+    const fork = await this.repository.createConversation({
+      projectId: source.projectId,
+      title: input.title?.trim() || `${source.title} (fork)`,
+      mode: source.mode,
+      sessionKind: source.sessionKind,
+      providerId: source.providerId,
+      providerConnectionId: source.providerConnectionId,
+      modelId: source.modelId,
+      workspaceRootId: source.workspaceRootId,
+    });
+    for (const message of await this.repository.listMessages(source.id)) {
+      if (message.status !== "completed") continue;
+      const contextLabels = message.contextAssets.map((asset) => asset.name);
+      await this.repository.addMessage({
+        conversationId: fork.id,
+        role: message.role,
+        content:
+          contextLabels.length > 0
+            ? `${message.content}\n\n[Contextos referenciados no fork: ${contextLabels.join(", ")}]`
+            : message.content,
+        attachments: message.attachments,
+      });
+    }
+    if (checkpoint)
+      await this.repository.addMessage({
+        conversationId: fork.id,
+        role: "system",
+        content: `Checkpoint de origem (somente contexto):\n${JSON.stringify(checkpoint)}`,
+      });
+    return fork;
   }
 
   refreshProviders(): Promise<ProviderSummary[]> {

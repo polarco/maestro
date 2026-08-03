@@ -5,15 +5,24 @@ import type {
   Conversation,
   Effort,
   Message,
+  ModelPreference,
+  ModelSelection,
   PlanSpec,
   Project,
   Run,
   RunDetail,
   RunMode,
   SessionKind,
+  ContextCheckpoint,
+  Turn,
 } from "./domain.js";
 import type { EventPage, RunEvent } from "./events.js";
-import type { ProviderConnectionSummary, ProviderSummary } from "./provider.js";
+import type {
+  ModelTelemetry,
+  ProviderConnectionSummary,
+  ProviderSummary,
+  RoutingDecision,
+} from "./provider.js";
 
 export interface UpdateState {
   status:
@@ -102,6 +111,59 @@ export interface SendMessageInput {
   effort: Effort;
   workspaceRootId: string;
   contextItems: ContextItemInput[];
+  modelPreference?: ModelPreference;
+}
+
+export interface StructuredQuestionAnswer {
+  questionId: string;
+  selectedOption?: string;
+  freeText?: string;
+}
+
+export interface AnswerQuestionsInput {
+  runId: string;
+  answers: StructuredQuestionAnswer[];
+}
+
+export interface SteerTurnInput {
+  runId: string;
+  content: string;
+}
+
+export interface SwitchModelInput {
+  runId: string;
+  selection: ModelSelection;
+  timing: "next_checkpoint" | "immediate";
+  noFallback?: boolean;
+}
+
+export interface GranularApprovalInput {
+  runId: string;
+  planVersion: number;
+  allowedTools?: string[];
+  allowedCommands?: string[];
+  writablePaths?: string[];
+  network?: "denied" | "web" | "full";
+}
+
+export interface CompactTurnInput {
+  conversationId: string;
+  runId?: string;
+  force?: boolean;
+}
+
+export interface ForkConversationInput {
+  conversationId: string;
+  checkpointId?: string;
+  title?: string;
+}
+
+export interface TurnStatusInspection {
+  turn: Turn | null;
+  checkpoint: ContextCheckpoint | null;
+  route: RoutingDecision | null;
+  telemetry: ModelTelemetry[];
+  pendingModel: ModelSelection | null;
 }
 
 export interface SearchWorkspaceContextInput {
@@ -243,8 +305,17 @@ export interface MaestroDesktopApi {
   getRun(runId: string): Promise<RunDetail>;
   getRunEvents(runId: string, afterSequence?: number, limit?: number): Promise<EventPage>;
   approveRun(runId: string, planVersion: number): Promise<RunDetail>;
+  approveRunGranular(input: GranularApprovalInput): Promise<RunDetail>;
   reviseRun(runId: string, planVersion: number, comment: string): Promise<PlanSpec>;
   cancelRun(runId: string): Promise<RunDetail>;
+  steerTurn(input: SteerTurnInput): Promise<void>;
+  answerQuestions(input: AnswerQuestionsInput): Promise<RunDetail>;
+  switchModel(input: SwitchModelInput): Promise<TurnStatusInspection>;
+  retryRun(runId: string): Promise<RunDetail>;
+  replanRun(runId: string, reason: string): Promise<PlanSpec>;
+  compactContext(input: CompactTurnInput): Promise<ContextCheckpoint>;
+  inspectRoute(runId: string): Promise<TurnStatusInspection>;
+  forkConversation(input: ForkConversationInput): Promise<Conversation>;
   refreshProviders(): Promise<ProviderSummary[]>;
   configureProvider(input: ConfigureProviderInput): Promise<ProviderSummary[]>;
   createProviderConnection(

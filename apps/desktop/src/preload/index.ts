@@ -61,9 +61,18 @@ const api: MaestroDesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.runEvents, runId, afterSequence, limit),
   approveRun: (runId, planVersion) =>
     ipcRenderer.invoke(IPC_CHANNELS.runApprove, runId, planVersion),
+  approveRunGranular: (input) => ipcRenderer.invoke(IPC_CHANNELS.runApproveGranular, input),
   reviseRun: (runId, planVersion, comment) =>
     ipcRenderer.invoke(IPC_CHANNELS.runRevise, runId, planVersion, comment),
   cancelRun: (runId) => ipcRenderer.invoke(IPC_CHANNELS.runCancel, runId),
+  steerTurn: (input) => ipcRenderer.invoke(IPC_CHANNELS.turnSteer, input),
+  answerQuestions: (input) => ipcRenderer.invoke(IPC_CHANNELS.questionsAnswer, input),
+  switchModel: (input) => ipcRenderer.invoke(IPC_CHANNELS.modelSwitch, input),
+  retryRun: (runId) => ipcRenderer.invoke(IPC_CHANNELS.runRetry, runId),
+  replanRun: (runId, reason) => ipcRenderer.invoke(IPC_CHANNELS.runReplan, runId, reason),
+  compactContext: (input) => ipcRenderer.invoke(IPC_CHANNELS.contextCompact, input),
+  inspectRoute: (runId) => ipcRenderer.invoke(IPC_CHANNELS.routeInspect, runId),
+  forkConversation: (input) => ipcRenderer.invoke(IPC_CHANNELS.conversationFork, input),
   refreshProviders: () => ipcRenderer.invoke(IPC_CHANNELS.providerRefresh),
   configureProvider: (input) => ipcRenderer.invoke(IPC_CHANNELS.providerConfigure, input),
   createProviderConnection: (input) =>

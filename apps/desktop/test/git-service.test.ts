@@ -128,4 +128,22 @@ describe("GitService", () => {
     expect(result.conflict).toBe(true);
     expect(result.path).toContain(path.join("conflict-run", "integration", "allowed"));
   });
+
+  it("reuses durable task and integration worktrees after a service restart", async () => {
+    const context = await service.beginRun("resume-run", path.join(repository, "allowed"));
+    const worktree = await service.createTaskWorktree(context!, "implement");
+    await writeFile(path.join(worktree.path, "resumed.txt"), "durable\n", "utf8");
+    const commit = await service.commitTask(worktree, "durable task");
+
+    const restarted = new GitService(supervisor, dataDirectory);
+    const reopened = await restarted.createTaskWorktree(context!, "implement");
+    expect(reopened.path).toBe(worktree.path);
+    await expect(restarted.branchHead(context!, reopened.branch)).resolves.toBe(commit);
+
+    const firstIntegration = await restarted.integrate(context!, [commit!]);
+    expect(firstIntegration.conflict).toBe(false);
+    const resumedIntegration = await restarted.integrate(context!, [commit!]);
+    expect(resumedIntegration.conflict).toBe(false);
+    expect(resumedIntegration.branch).toBe(firstIntegration.branch);
+  });
 });

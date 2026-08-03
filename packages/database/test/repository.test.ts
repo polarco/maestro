@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
-import type { PlanSpec, RunSpec } from "@maestro/contracts";
+import type { ExecutionPolicy, PlanSpec, RunSpec, ToolCall, ToolResult } from "@maestro/contracts";
 import { describe, expect, it } from "vitest";
+import { createContextCheckpoint, executionPolicyHash, TurnCoordinator } from "@maestro/core";
 import { MaestroRepository } from "../src/repository.js";
 import { INITIAL_MIGRATION, MULTI_ACCOUNT_MIGRATION } from "../src/migration.js";
 
@@ -30,7 +31,7 @@ describe("MaestroRepository", () => {
     expect(columns.some((column) => column.name === "provider_connection_id")).toBe(true);
     expect(
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     db.close();
   });
 
@@ -52,7 +53,7 @@ describe("MaestroRepository", () => {
     const db = new MaestroRepository(filename);
     expect(
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     expect(
       db.sqlite
         .prepare(
@@ -488,6 +489,182 @@ describe("MaestroRepository", () => {
     await db.transitionRun(spec.id, "queued");
     expect((await db.getRun(spec.id)).state).toBe("queued");
     expect((await db.getPlan(spec.id, 1)).status).toBe("approved");
+    db.close();
+  });
+
+  it("persists turns, tools, approvals, checkpoints, routes and pending switches across restart", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-runtime-db-"));
+    const filename = path.join(directory, "maestro.db");
+    let db = new MaestroRepository(filename);
+    const project = await db.createProject({
+      name: "Runtime",
+      path: directory,
+      canonicalPath: directory,
+      displayName: "runtime",
+    });
+    const root = project.roots[0]!;
+    const conversation = await db.createConversation({
+      projectId: project.id,
+      title: "Runtime",
+      mode: "maestro",
+      sessionKind: "structured",
+      workspaceRootId: root.id,
+    });
+    const runSpec: RunSpec = {
+      id: "run-runtime",
+      mode: "maestro",
+      projectId: project.id,
+      conversationId: conversation.id,
+      workspaceRootIds: [root.id],
+      prompt: "Pesquise o workspace",
+      contextAssetIds: [],
+      requestedModel: { providerId: "fixture", modelId: "model" },
+      roleModels: {},
+      permissions: {
+        readWorkspace: true,
+        writeWorkspace: false,
+        runCommands: false,
+        network: false,
+        allowedCommands: [],
+        deniedCommands: [],
+      },
+      budget: { maxTokens: null, maxCostUsd: null, maxDurationMinutes: 10, maxTurns: 4 },
+      concurrency: 1,
+      createdAt: new Date().toISOString(),
+    };
+    await db.createRun(runSpec, "researching");
+    const turn = await new TurnCoordinator(db).start({
+      conversationId: conversation.id,
+      runId: runSpec.id,
+      sequence: 1,
+      prompt: runSpec.prompt,
+      readableRoots: [root.canonicalPath],
+      hasWorkspace: true,
+      intent: {
+        path: "research",
+        category: "workspace_question",
+        confidence: 1,
+        rationale: "fixture",
+        requiresWorkspace: true,
+        requiresApproval: false,
+        materialDecisions: [],
+        requestedCapabilities: ["workspace-read"],
+      },
+    });
+    const checkpoint = createContextCheckpoint({
+      conversationId: conversation.id,
+      runId: runSpec.id,
+      turnId: turn.id,
+      update: { objective: runSpec.prompt, progress: ["leitura concluída"] },
+    });
+    await db.saveCheckpoint(checkpoint);
+    const call: ToolCall = {
+      id: "tool-call-runtime",
+      turnId: turn.id,
+      runId: runSpec.id,
+      toolName: "fs.read",
+      input: { path: "README.md" },
+      status: "completed",
+      mutability: "read",
+      idempotencyKey: "stable-runtime-key",
+      checkpointId: checkpoint.id,
+      createdAt: checkpoint.createdAt,
+      startedAt: checkpoint.createdAt,
+      finishedAt: checkpoint.createdAt,
+    };
+    const result: ToolResult = {
+      id: "tool-result-runtime",
+      toolCallId: call.id,
+      output: { content: "ok" },
+      isError: false,
+      error: null,
+      artifactRef: null,
+      truncated: false,
+      contentHash: "hash",
+      createdAt: checkpoint.createdAt,
+    };
+    await db.createToolCall(call);
+    await db.saveToolResult(result);
+    const approvalBase: Omit<ExecutionPolicy, "scopeHash"> = {
+      readableRoots: [root.canonicalPath],
+      writableRoots: [root.canonicalPath],
+      allowedTools: ["fs.write"],
+      allowedExecutables: [],
+      network: "denied",
+      externalMutations: false,
+      writeApproved: true,
+      approvalId: "approval-runtime",
+      approvedPlanVersion: 1,
+    };
+    const approvalPolicy = {
+      ...approvalBase,
+      scopeHash: executionPolicyHash(approvalBase),
+    };
+    await db.createApproval({
+      id: "approval-runtime",
+      runId: runSpec.id,
+      turnId: turn.id,
+      planVersion: 1,
+      scope: approvalPolicy,
+    });
+    await db.resolveApproval("approval-runtime", "approved");
+    const capability = {
+      chat: true,
+      coding: true,
+      tools: true,
+      vision: false,
+      reasoningEffort: ["medium" as const],
+      structuredOutput: true,
+      contextWindow: 128_000,
+    };
+    await db.saveRoutingDecision(
+      {
+        id: "route-runtime",
+        turnId: turn.id,
+        role: "research",
+        profile: "economical",
+        selected: {
+          selection: { providerId: "fixture", modelId: "model" },
+          capability,
+          eligible: true,
+          excludedReasons: [],
+          quality: 0.8,
+          marginalCostUsd: 0,
+          sessionAffinity: 0,
+          reliability: 1,
+          headroom: 1,
+          latencyMs: 10,
+          cacheAffinity: 0,
+          circuitState: "closed",
+        },
+        candidates: [],
+        pinned: false,
+        fallbackAllowed: true,
+        rationale: "fixture",
+        createdAt: checkpoint.createdAt,
+      },
+      runSpec.id,
+    );
+    await db.setPendingModelSwitch({
+      runId: runSpec.id,
+      selection: { providerId: "fixture-2", modelId: "model-2" },
+      timing: "next_checkpoint",
+      noFallback: false,
+      requestedAt: checkpoint.createdAt,
+    });
+    db.close();
+
+    db = new MaestroRepository(filename);
+    expect((await db.getLatestTurn({ runId: runSpec.id }))?.id).toBe(turn.id);
+    expect((await db.getLatestCheckpoint({ runId: runSpec.id }))?.id).toBe(checkpoint.id);
+    expect((await db.findToolCallByIdempotencyKey("stable-runtime-key"))?.result?.id).toBe(
+      result.id,
+    );
+    expect((await db.getApprovedExecutionPolicy(runSpec.id, 1))?.scope.scopeHash).toBe(
+      approvalPolicy.scopeHash,
+    );
+    expect((await db.getLatestRoutingDecision(runSpec.id))?.id).toBe("route-runtime");
+    expect((await db.getPendingModelSwitch(runSpec.id))?.selection.providerId).toBe("fixture-2");
     db.close();
   });
 });

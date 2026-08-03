@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import BetterSqlite3 from "better-sqlite3";
 import { and, asc, desc, eq, exists, inArray, isNotNull } from "drizzle-orm";
@@ -7,20 +8,30 @@ import { ulid } from "ulid";
 import {
   DEFAULT_APP_SETTINGS,
   appSettingsSchema,
+  contextCheckpointSchema,
+  executionPolicySchema,
   planSpecSchema,
   runSpecSchema,
+  toolCallSchema,
+  toolResultSchema,
+  turnSchema,
   type AppSettings,
   type Attachment,
   type ContextAssetSummary,
+  type ContextCheckpoint,
   type Conversation,
   type EventPage,
   type Message,
   type MessageRole,
   type MessageStatus,
+  type ModelSelection,
+  type ModelTelemetry,
   type NewRunEvent,
   type PlanSpec,
   type Project,
   type ProviderConnection,
+  type RecoveryAttempt,
+  type RoutingDecision,
   type Run,
   type RunDetail,
   type RunEvent,
@@ -30,29 +41,47 @@ import {
   type SessionKind,
   type TaskRun,
   type TaskSpec,
+  type ToolCall,
+  type ToolResult,
+  type Turn,
+  type TurnItem,
+  type TurnState,
+  type ExecutionPolicy,
   type WorkspaceRoot,
 } from "@maestro/contracts";
 import { assertRunTransition, MaestroError } from "@maestro/core";
 import {
+  AGENT_RUNTIME_MIGRATION,
   INITIAL_MIGRATION,
   MULTI_ACCOUNT_MIGRATION,
   MULTIMODAL_CONTEXT_MIGRATION,
 } from "./migration.js";
 import {
   appMetadata,
+  approvals,
   conversations,
   contextAssets,
+  contextCheckpoints,
   messages,
   messageContextAssets,
+  modelTelemetry,
+  pendingModelSwitches,
   plans,
   projects,
   providerConfigs,
   providerConnections,
+  recoveryAttempts,
+  routingDecisions,
   runs,
   schema,
   secrets,
   settings,
   taskRuns,
+  toolCalls,
+  toolArtifacts,
+  toolResults,
+  turnItems,
+  turns,
   workspaceRoots,
 } from "./schema.js";
 
@@ -72,6 +101,28 @@ export interface SecretRecord {
   iv: string | null;
   tag: string | null;
   updatedAt: string;
+}
+
+export interface ApprovalRecord {
+  id: string;
+  runId: string;
+  turnId: string | null;
+  planVersion: number | null;
+  kind: "plan" | "command" | "file" | "tool" | "network";
+  status: "pending" | "approved" | "denied" | "superseded";
+  scope: ExecutionPolicy;
+  scopeHash: string;
+  requestedAt: string;
+  resolvedAt: string | null;
+  resolution: string | null;
+}
+
+export interface PendingModelSwitchRecord {
+  runId: string;
+  selection: ModelSelection;
+  timing: "next_checkpoint" | "immediate";
+  noFallback: boolean;
+  requestedAt: string;
 }
 
 interface ConversationInput {
@@ -169,6 +220,17 @@ export class MaestroRepository {
         this.sqlite
           .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
           .run(3, now());
+      })();
+    }
+    const migration4 = this.sqlite
+      .prepare("SELECT version FROM schema_migrations WHERE version = 4")
+      .get();
+    if (!migration4) {
+      this.sqlite.transaction(() => {
+        this.sqlite.exec(AGENT_RUNTIME_MIGRATION);
+        this.sqlite
+          .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(4, now());
       })();
     }
     this.db = drizzle(this.sqlite, { schema });
@@ -944,6 +1006,47 @@ export class MaestroRepository {
     return this.getRun(runId);
   }
 
+  /**
+   * Recovery-only rewind to a checkpointable state. Normal state changes must
+   * continue to use transitionRun and its stricter transition graph.
+   */
+  async recoverRunState(
+    runId: string,
+    to: "discovering" | "researching" | "running" | "queued",
+  ): Promise<Run> {
+    const current = await this.getRun(runId);
+    if (current.state === "completed" || current.state === "failed" || current.state === "canceled")
+      throw new MaestroError(
+        "TERMINAL_RUN_NOT_RECOVERABLE",
+        "Execução terminal não pode ser retomada.",
+      );
+    await this.db
+      .update(runs)
+      .set({
+        state: to,
+        updatedAt: now(),
+        error: null,
+        finishedAt: null,
+      })
+      .where(eq(runs.id, runId));
+    return this.getRun(runId);
+  }
+
+  /** Explicit user retry from a failed run, still gated by a safe checkpoint in orchestration. */
+  async retryFailedRunState(runId: string, to: "discovering" | "queued"): Promise<Run> {
+    const current = await this.getRun(runId);
+    if (current.state !== "failed")
+      throw new MaestroError(
+        "RUN_NOT_RETRYABLE",
+        "Somente uma execução com falha pode ser repetida.",
+      );
+    await this.db
+      .update(runs)
+      .set({ state: to, updatedAt: now(), error: null, finishedAt: null })
+      .where(eq(runs.id, runId));
+    return this.getRun(runId);
+  }
+
   async addPlan(plan: PlanSpec, markdown: string): Promise<PlanSpec> {
     const parsed = planSpecSchema.parse(plan);
     await this.db
@@ -1146,6 +1249,572 @@ export class MaestroRepository {
       this.listTaskRuns(runId),
     ]);
     return { run, plans: planValues, tasks };
+  }
+
+  async nextTurnSequence(conversationId: string): Promise<number> {
+    await this.getConversation(conversationId);
+    const row = this.sqlite
+      .prepare(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM turns WHERE conversation_id = ?",
+      )
+      .get(conversationId) as { sequence: number };
+    return row.sequence;
+  }
+
+  async createTurn(turn: Turn): Promise<Turn> {
+    const parsed = turnSchema.parse(turn);
+    await this.getConversation(parsed.conversationId);
+    if (parsed.runId) await this.getRun(parsed.runId);
+    await this.db.insert(turns).values(parsed);
+    return parsed;
+  }
+
+  async getTurn(turnId: string): Promise<Turn> {
+    const [row] = await this.db.select().from(turns).where(eq(turns.id, turnId)).limit(1);
+    if (!row) throw new MaestroError("TURN_NOT_FOUND", "Turno não encontrado.");
+    return turnSchema.parse(row);
+  }
+
+  async getLatestTurn(input: { conversationId?: string; runId?: string }): Promise<Turn | null> {
+    if (!input.conversationId && !input.runId)
+      throw new MaestroError("TURN_FILTER_REQUIRED", "Informe a conversa ou a execução.");
+    const rows = input.runId
+      ? await this.db
+          .select()
+          .from(turns)
+          .where(eq(turns.runId, input.runId))
+          .orderBy(desc(turns.sequence))
+          .limit(1)
+      : await this.db
+          .select()
+          .from(turns)
+          .where(eq(turns.conversationId, input.conversationId!))
+          .orderBy(desc(turns.sequence))
+          .limit(1);
+    return rows[0] ? turnSchema.parse(rows[0]) : null;
+  }
+
+  async listTurns(input: {
+    conversationId?: string;
+    runId?: string;
+    states?: TurnState[];
+  }): Promise<Turn[]> {
+    const clauses = [
+      ...(input.conversationId ? [eq(turns.conversationId, input.conversationId)] : []),
+      ...(input.runId ? [eq(turns.runId, input.runId)] : []),
+      ...(input.states?.length ? [inArray(turns.state, input.states)] : []),
+    ];
+    const rows = await this.db
+      .select()
+      .from(turns)
+      .where(clauses.length > 0 ? and(...clauses) : undefined)
+      .orderBy(asc(turns.sequence));
+    return rows.map((row) => turnSchema.parse(row));
+  }
+
+  async updateTurn(
+    turnId: string,
+    values: Partial<
+      Pick<
+        Turn,
+        | "runId"
+        | "state"
+        | "policy"
+        | "modelPreference"
+        | "selectedModel"
+        | "inputMessageId"
+        | "outputMessageId"
+        | "completedAt"
+        | "error"
+      >
+    >,
+  ): Promise<Turn> {
+    await this.getTurn(turnId);
+    await this.db
+      .update(turns)
+      .set({ ...values, updatedAt: now() })
+      .where(eq(turns.id, turnId));
+    return this.getTurn(turnId);
+  }
+
+  async transitionTurn(turnId: string, state: TurnState, error?: string | null): Promise<Turn> {
+    const terminal = state === "completed" || state === "failed" || state === "canceled";
+    return this.updateTurn(turnId, {
+      state,
+      ...(error !== undefined ? { error } : {}),
+      ...(terminal ? { completedAt: now() } : {}),
+    });
+  }
+
+  appendTurnItem(turnId: string, kind: TurnItem["kind"], payload: unknown): Promise<TurnItem> {
+    const insert = this.sqlite.transaction(() => {
+      const exists = this.sqlite.prepare("SELECT id FROM turns WHERE id = ?").get(turnId);
+      if (!exists) throw new MaestroError("TURN_NOT_FOUND", "Turno não encontrado.");
+      const sequenceRow = this.sqlite
+        .prepare(
+          "SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence FROM turn_items WHERE turn_id = ?",
+        )
+        .get(turnId) as { sequence: number };
+      const item: TurnItem = {
+        id: ulid(),
+        turnId,
+        sequence: sequenceRow.sequence,
+        kind,
+        payload,
+        createdAt: now(),
+      };
+      this.sqlite
+        .prepare(
+          "INSERT INTO turn_items(id, turn_id, sequence, kind, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          item.id,
+          item.turnId,
+          item.sequence,
+          item.kind,
+          JSON.stringify(item.payload),
+          item.createdAt,
+        );
+      return item;
+    });
+    return Promise.resolve(insert());
+  }
+
+  async listTurnItems(turnId: string): Promise<TurnItem[]> {
+    await this.getTurn(turnId);
+    const rows = await this.db
+      .select()
+      .from(turnItems)
+      .where(eq(turnItems.turnId, turnId))
+      .orderBy(asc(turnItems.sequence));
+    return rows.map((row) => ({ ...row, payload: row.payload }));
+  }
+
+  async createToolCall(call: ToolCall): Promise<void> {
+    const parsed = toolCallSchema.parse(call);
+    await this.getTurn(parsed.turnId);
+    await this.db.insert(toolCalls).values(parsed);
+    await this.appendTurnItem(parsed.turnId, "tool_call", parsed);
+  }
+
+  async updateToolCall(call: ToolCall): Promise<void> {
+    const parsed = toolCallSchema.parse(call);
+    await this.db
+      .update(toolCalls)
+      .set({
+        status: parsed.status,
+        checkpointId: parsed.checkpointId,
+        startedAt: parsed.startedAt,
+        finishedAt: parsed.finishedAt,
+      })
+      .where(eq(toolCalls.id, parsed.id));
+  }
+
+  async saveToolResult(result: ToolResult): Promise<void> {
+    const parsed = toolResultSchema.parse(result);
+    const [call] = await this.db
+      .select()
+      .from(toolCalls)
+      .where(eq(toolCalls.id, parsed.toolCallId))
+      .limit(1);
+    if (!call)
+      throw new MaestroError("TOOL_CALL_NOT_FOUND", "Chamada de ferramenta não encontrada.");
+    await this.db
+      .insert(toolResults)
+      .values(parsed)
+      .onConflictDoUpdate({
+        target: toolResults.toolCallId,
+        set: {
+          output: parsed.output,
+          isError: parsed.isError,
+          error: parsed.error,
+          artifactRef: parsed.artifactRef,
+          truncated: parsed.truncated,
+          contentHash: parsed.contentHash,
+          createdAt: parsed.createdAt,
+        },
+      });
+    await this.appendTurnItem(call.turnId, "tool_result", parsed);
+  }
+
+  async findToolCallByIdempotencyKey(
+    idempotencyKey: string,
+  ): Promise<{ call: ToolCall; result: ToolResult | null } | null> {
+    const [call] = await this.db
+      .select()
+      .from(toolCalls)
+      .where(eq(toolCalls.idempotencyKey, idempotencyKey))
+      .limit(1);
+    if (!call) return null;
+    const [result] = await this.db
+      .select()
+      .from(toolResults)
+      .where(eq(toolResults.toolCallId, call.id))
+      .limit(1);
+    return {
+      call: toolCallSchema.parse(call),
+      result: result ? toolResultSchema.parse(result) : null,
+    };
+  }
+
+  async createApproval(input: {
+    id?: string;
+    runId: string;
+    turnId?: string | null;
+    planVersion?: number | null;
+    kind?: ApprovalRecord["kind"];
+    scope: ExecutionPolicy;
+  }): Promise<ApprovalRecord> {
+    await this.getRun(input.runId);
+    const record: ApprovalRecord = {
+      id: input.id ?? ulid(),
+      runId: input.runId,
+      turnId: input.turnId ?? null,
+      planVersion: input.planVersion ?? null,
+      kind: input.kind ?? "plan",
+      status: "pending",
+      scope: input.scope,
+      scopeHash: input.scope.scopeHash,
+      requestedAt: now(),
+      resolvedAt: null,
+      resolution: null,
+    };
+    await this.db.insert(approvals).values(record);
+    return record;
+  }
+
+  async resolveApproval(
+    approvalId: string,
+    decision: "approved" | "denied" | "superseded",
+    resolution?: string,
+  ): Promise<ApprovalRecord> {
+    await this.db
+      .update(approvals)
+      .set({ status: decision, resolvedAt: now(), resolution: resolution ?? null })
+      .where(eq(approvals.id, approvalId));
+    const [record] = await this.db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, approvalId))
+      .limit(1);
+    if (!record) throw new MaestroError("APPROVAL_NOT_FOUND", "Aprovação não encontrada.");
+    return record;
+  }
+
+  async updateApprovalScope(approvalId: string, scope: ExecutionPolicy): Promise<ApprovalRecord> {
+    const parsed = executionPolicySchema.parse(scope);
+    await this.db
+      .update(approvals)
+      .set({ scope: parsed, scopeHash: parsed.scopeHash })
+      .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")));
+    const [record] = await this.db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, approvalId))
+      .limit(1);
+    if (!record) throw new MaestroError("APPROVAL_NOT_FOUND", "Aprovação não encontrada.");
+    if (record.status !== "pending")
+      throw new MaestroError("APPROVAL_ALREADY_RESOLVED", "A aprovação já foi resolvida.");
+    return record;
+  }
+
+  async getApprovedExecutionPolicy(
+    runId: string,
+    planVersion?: number,
+  ): Promise<ApprovalRecord | null> {
+    const rows = await this.db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.runId, runId), eq(approvals.status, "approved")))
+      .orderBy(desc(approvals.resolvedAt));
+    return rows.find((row) => planVersion === undefined || row.planVersion === planVersion) ?? null;
+  }
+
+  async saveCheckpoint(checkpoint: ContextCheckpoint): Promise<ContextCheckpoint> {
+    const parsed = contextCheckpointSchema.parse(checkpoint);
+    await this.getTurn(parsed.turnId);
+    await this.db.insert(contextCheckpoints).values({
+      id: parsed.id,
+      conversationId: parsed.conversationId,
+      runId: parsed.runId,
+      turnId: parsed.turnId,
+      version: parsed.version,
+      checkpoint: parsed,
+      safeToResume: parsed.safeToResume,
+      createdAt: parsed.createdAt,
+    });
+    await this.appendTurnItem(parsed.turnId, "checkpoint", parsed);
+    return parsed;
+  }
+
+  async getCheckpoint(checkpointId: string): Promise<ContextCheckpoint> {
+    const [row] = await this.db
+      .select()
+      .from(contextCheckpoints)
+      .where(eq(contextCheckpoints.id, checkpointId))
+      .limit(1);
+    if (!row) throw new MaestroError("CHECKPOINT_NOT_FOUND", "Checkpoint não encontrado.");
+    return contextCheckpointSchema.parse(row.checkpoint);
+  }
+
+  async getLatestCheckpoint(input: {
+    conversationId?: string;
+    runId?: string;
+    turnId?: string;
+    safeOnly?: boolean;
+  }): Promise<ContextCheckpoint | null> {
+    const clauses = [
+      ...(input.conversationId
+        ? [eq(contextCheckpoints.conversationId, input.conversationId)]
+        : []),
+      ...(input.runId ? [eq(contextCheckpoints.runId, input.runId)] : []),
+      ...(input.turnId ? [eq(contextCheckpoints.turnId, input.turnId)] : []),
+      ...(input.safeOnly ? [eq(contextCheckpoints.safeToResume, true)] : []),
+    ];
+    if (clauses.length === 0)
+      throw new MaestroError("CHECKPOINT_FILTER_REQUIRED", "Informe o escopo do checkpoint.");
+    const [row] = await this.db
+      .select()
+      .from(contextCheckpoints)
+      .where(and(...clauses))
+      .orderBy(desc(contextCheckpoints.createdAt), desc(contextCheckpoints.version))
+      .limit(1);
+    return row ? contextCheckpointSchema.parse(row.checkpoint) : null;
+  }
+
+  async saveRoutingDecision(
+    decision: RoutingDecision,
+    runId?: string | null,
+  ): Promise<RoutingDecision> {
+    await this.db.insert(routingDecisions).values({
+      id: decision.id,
+      turnId: decision.turnId,
+      runId: runId ?? null,
+      role: decision.role,
+      providerId: decision.selected.selection.providerId,
+      connectionId: decision.selected.selection.connectionId ?? null,
+      modelId: decision.selected.selection.modelId,
+      decision,
+      createdAt: decision.createdAt,
+    });
+    if (decision.turnId) await this.appendTurnItem(decision.turnId, "route", decision);
+    return decision;
+  }
+
+  async getLatestRoutingDecision(runId: string): Promise<RoutingDecision | null> {
+    const [row] = await this.db
+      .select()
+      .from(routingDecisions)
+      .where(eq(routingDecisions.runId, runId))
+      .orderBy(desc(routingDecisions.createdAt))
+      .limit(1);
+    return row?.decision ?? null;
+  }
+
+  async saveRecoveryAttempt(attempt: RecoveryAttempt): Promise<RecoveryAttempt> {
+    await this.db
+      .insert(recoveryAttempts)
+      .values({
+        id: attempt.id,
+        turnId: attempt.turnId,
+        runId: attempt.runId,
+        attempt,
+        createdAt: attempt.createdAt,
+        finishedAt: attempt.finishedAt,
+      })
+      .onConflictDoUpdate({
+        target: recoveryAttempts.id,
+        set: { attempt, finishedAt: attempt.finishedAt },
+      });
+    return attempt;
+  }
+
+  async listRecoveryAttempts(runId: string): Promise<RecoveryAttempt[]> {
+    const rows = await this.db
+      .select({ attempt: recoveryAttempts.attempt })
+      .from(recoveryAttempts)
+      .where(eq(recoveryAttempts.runId, runId))
+      .orderBy(asc(recoveryAttempts.createdAt));
+    return rows.map((row) => row.attempt);
+  }
+
+  async finishRecoveryAttempt(
+    id: string,
+    outcome: Exclude<RecoveryAttempt["outcome"], "pending">,
+  ): Promise<RecoveryAttempt> {
+    const [row] = await this.db
+      .select({ attempt: recoveryAttempts.attempt })
+      .from(recoveryAttempts)
+      .where(eq(recoveryAttempts.id, id))
+      .limit(1);
+    if (!row)
+      throw new MaestroError(
+        "RECOVERY_ATTEMPT_NOT_FOUND",
+        "Tentativa de recuperação não encontrada.",
+      );
+    const finishedAt = now();
+    const attempt: RecoveryAttempt = { ...row.attempt, outcome, finishedAt };
+    await this.db
+      .update(recoveryAttempts)
+      .set({ attempt, finishedAt })
+      .where(eq(recoveryAttempts.id, id));
+    return attempt;
+  }
+
+  async putToolArtifact(
+    content: string,
+    metadata: { toolCallId: string; toolName: string },
+  ): Promise<string> {
+    const id = ulid();
+    await this.db.insert(toolArtifacts).values({
+      id,
+      toolCallId: metadata.toolCallId,
+      content,
+      contentHash: createHash("sha256").update(content).digest("hex"),
+      byteLength: Buffer.byteLength(content),
+      createdAt: now(),
+    });
+    return `maestro-artifact://${id}`;
+  }
+
+  async getToolArtifact(reference: string): Promise<string> {
+    const id = reference.replace(/^maestro-artifact:\/\//, "");
+    const [row] = await this.db
+      .select()
+      .from(toolArtifacts)
+      .where(eq(toolArtifacts.id, id))
+      .limit(1);
+    if (!row) throw new MaestroError("TOOL_ARTIFACT_NOT_FOUND", "Artefato não encontrado.");
+    return row.content;
+  }
+
+  async setPendingModelSwitch(record: PendingModelSwitchRecord): Promise<void> {
+    await this.db
+      .insert(pendingModelSwitches)
+      .values(record)
+      .onConflictDoUpdate({
+        target: pendingModelSwitches.runId,
+        set: {
+          selection: record.selection,
+          timing: record.timing,
+          noFallback: record.noFallback,
+          requestedAt: record.requestedAt,
+        },
+      });
+  }
+
+  async getPendingModelSwitch(runId: string): Promise<PendingModelSwitchRecord | null> {
+    const [record] = await this.db
+      .select()
+      .from(pendingModelSwitches)
+      .where(eq(pendingModelSwitches.runId, runId))
+      .limit(1);
+    return record ?? null;
+  }
+
+  async clearPendingModelSwitch(runId: string): Promise<void> {
+    await this.db.delete(pendingModelSwitches).where(eq(pendingModelSwitches.runId, runId));
+  }
+
+  async upsertModelTelemetry(value: ModelTelemetry): Promise<void> {
+    const key = `${value.providerId}:${value.connectionId ?? "default"}:${value.modelId}`;
+    const row = {
+      key,
+      providerId: value.providerId,
+      connectionId: value.connectionId,
+      modelId: value.modelId,
+      successes: value.successes,
+      failures: value.failures,
+      consecutiveFailures: value.consecutiveFailures,
+      latencyEwmaMs: value.latencyEwmaMs,
+      quotaRemaining: value.quotaRemaining,
+      quotaLimit: value.quotaLimit,
+      activeSessions: value.activeSessions,
+      concurrencyLimit: value.concurrencyLimit,
+      cooldownUntil: value.cooldownUntil,
+      circuitState: value.circuitState,
+      cachedInputTokens: value.cachedInputTokens,
+      inputTokens: value.inputTokens,
+      outputTokens: value.outputTokens,
+      costUsd: value.costUsd,
+      updatedAt: value.updatedAt,
+    };
+    await this.db
+      .insert(modelTelemetry)
+      .values(row)
+      .onConflictDoUpdate({ target: modelTelemetry.key, set: row });
+  }
+
+  async listModelTelemetry(): Promise<ModelTelemetry[]> {
+    const rows = await this.db.select().from(modelTelemetry);
+    const timestamp = Date.now();
+    return rows.map(({ key: _key, ...row }) => {
+      const cooldown = row.cooldownUntil ? Date.parse(row.cooldownUntil) : 0;
+      return {
+        ...row,
+        circuitState:
+          row.circuitState === "open" && cooldown > 0 && cooldown <= timestamp
+            ? ("half_open" as const)
+            : row.circuitState,
+        successRate:
+          row.successes + row.failures > 0 ? row.successes / (row.successes + row.failures) : 1,
+      };
+    });
+  }
+
+  async recordModelOutcome(input: {
+    selection: ModelSelection;
+    success: boolean;
+    latencyMs?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    costUsd?: number;
+    cooldownUntil?: string | null;
+  }): Promise<ModelTelemetry> {
+    const existing = (await this.listModelTelemetry()).find(
+      (item) =>
+        item.providerId === input.selection.providerId &&
+        item.modelId === input.selection.modelId &&
+        item.connectionId === (input.selection.connectionId ?? null),
+    );
+    const successes = (existing?.successes ?? 0) + (input.success ? 1 : 0);
+    const failures = (existing?.failures ?? 0) + (input.success ? 0 : 1);
+    const consecutiveFailures = input.success ? 0 : (existing?.consecutiveFailures ?? 0) + 1;
+    const circuitOpen = !input.success && consecutiveFailures >= 3;
+    const cooldownUntil = input.success
+      ? null
+      : circuitOpen
+        ? (input.cooldownUntil ?? new Date(Date.now() + 60_000).toISOString())
+        : (input.cooldownUntil ?? existing?.cooldownUntil ?? null);
+    const value: ModelTelemetry = {
+      providerId: input.selection.providerId,
+      connectionId: input.selection.connectionId ?? null,
+      modelId: input.selection.modelId,
+      successes,
+      failures,
+      consecutiveFailures,
+      latencyEwmaMs:
+        input.latencyMs === undefined
+          ? (existing?.latencyEwmaMs ?? null)
+          : existing?.latencyEwmaMs === null || existing?.latencyEwmaMs === undefined
+            ? input.latencyMs
+            : existing.latencyEwmaMs * 0.7 + input.latencyMs * 0.3,
+      successRate: successes + failures > 0 ? successes / (successes + failures) : 1,
+      quotaRemaining: existing?.quotaRemaining ?? null,
+      quotaLimit: existing?.quotaLimit ?? null,
+      activeSessions: existing?.activeSessions ?? 0,
+      concurrencyLimit: existing?.concurrencyLimit ?? null,
+      cooldownUntil,
+      circuitState: circuitOpen ? "open" : "closed",
+      cachedInputTokens: (existing?.cachedInputTokens ?? 0) + (input.cachedTokens ?? 0),
+      inputTokens: (existing?.inputTokens ?? 0) + (input.inputTokens ?? 0),
+      outputTokens: (existing?.outputTokens ?? 0) + (input.outputTokens ?? 0),
+      costUsd: (existing?.costUsd ?? 0) + (input.costUsd ?? 0),
+      updatedAt: now(),
+    };
+    await this.upsertModelTelemetry(value);
+    return value;
   }
 
   async getSettings(): Promise<AppSettings> {

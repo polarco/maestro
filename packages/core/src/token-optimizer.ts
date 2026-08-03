@@ -2,36 +2,13 @@ import type { MessageRole, TokenOptimizationMode } from "@maestro/contracts";
 
 /**
  * Context compaction adapted from OmniRoute's layered context manager and
- * context handoff (MIT, diegosouzapw, reviewed at commit ed2551e). Maestro
+ * context handoff (MIT, diegosouzapw, reviewed at commit 84b1e5e). Maestro
  * keeps the persisted transcript immutable and only transforms provider input.
  */
 
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const MAX_RESERVE_TOKENS = 16_000;
-
-// Small offline snapshot of context limits used by OmniRoute's MODEL_SPECS.
-// Provider-reported values always win; these entries only improve unknown APIs.
-const KNOWN_MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
-  "gpt-5.5": 1_050_000,
-  "gpt-4o": 128_000,
-  "gpt-4o-mini": 128_000,
-  "claude-opus-4-5": 200_000,
-  "claude-sonnet-4-5": 200_000,
-  "claude-haiku-4-5": 200_000,
-  "claude-sonnet-4-6": 1_000_000,
-  "claude-opus-4-6": 1_000_000,
-  "claude-opus-4-7": 1_000_000,
-  "claude-opus-4-8": 1_000_000,
-  "gemini-3-flash": 1_048_576,
-  "gemini-3-1-pro": 1_048_576,
-  "gemini-3-5-flash": 1_048_576,
-  "kimi-k2-5": 262_144,
-  "kimi-k2-6": 262_144,
-  "qwen3-max": 1_000_000,
-  "qwen3-6-plus": 1_000_000,
-  "qwen3-5-plus": 1_000_000,
-};
 
 export interface ContextHistoryMessage {
   id: string;
@@ -40,6 +17,14 @@ export interface ContextHistoryMessage {
   hasContext?: boolean;
   contextLabels?: readonly string[];
   estimatedContextTokens?: number;
+  /** Provider-reported token count for this item, when available. */
+  tokenCount?: number;
+  contentKind?: "text" | "image" | "tool-call" | "tool-result";
+  toolCallId?: string;
+  toolResultFor?: string;
+  artifactRef?: string;
+  /** Decisions, code, diffs, JSON and other content that must remain verbatim. */
+  protected?: boolean;
 }
 
 export interface ModelTransitionEndpoint {
@@ -70,12 +55,23 @@ export interface ContextOptimizationStats {
   compactedMessages: number;
   omittedContextItems: number;
   techniques: string[];
+  stage: "lite" | "progressive" | "handoff" | "emergency";
+  fidelityPassed: boolean;
+  providerTokenCountUsed: boolean;
 }
 
 export interface ContextOptimizationResult {
   messages: OptimizedContextMessage[];
   handoff: string | null;
   stats: ContextOptimizationStats;
+  fidelity: ContextFidelityResult;
+}
+
+export interface ContextFidelityResult {
+  passed: boolean;
+  missingMessageIds: string[];
+  orphanedToolCallIds: string[];
+  reasons: string[];
 }
 
 export interface ContextOptimizationOptions {
@@ -84,6 +80,10 @@ export interface ContextOptimizationOptions {
   providerId?: string;
   modelId?: string;
   currentInputTokens?: number;
+  /** Exact provider count for the history, preferred over local estimation. */
+  providerInputTokens?: number;
+  recentTokenBudget?: number;
+  storeToolResult?: (message: ContextHistoryMessage) => string;
   transition?: ModelTransition;
 }
 
@@ -100,33 +100,16 @@ export function estimateTokens(value: string | object | null | undefined): numbe
   return Math.ceil(serialized.length / CHARS_PER_TOKEN);
 }
 
-/** OmniRoute-compatible fallbacks, used only when a provider exposes no limit. */
+/** Conservative fallback used only when a provider exposes no context limit. */
 export function resolveModelContextWindow(
   providerId: string,
   modelId: string,
   explicit: number | null | undefined,
 ): number {
+  void providerId;
+  void modelId;
   if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0)
     return Math.floor(explicit);
-  const provider = providerId.toLowerCase();
-  const model = modelId.toLowerCase();
-  const normalizedModel = model
-    .split("/")
-    .at(-1)!
-    .replaceAll(".", "-")
-    .replace(/-\d{8}$/, "");
-  const known = KNOWN_MODEL_CONTEXT_WINDOWS[normalizedModel];
-  if (known) return known;
-  if (provider.includes("gemini") || model.includes("gemini")) return 1_000_000;
-  if (provider.includes("claude") || provider.includes("anthropic") || model.includes("claude"))
-    return 200_000;
-  if (
-    provider === "codex" ||
-    model.includes("codex") ||
-    model.includes("gpt") ||
-    /(^|[-_/])o[134]($|[-_/])/.test(model)
-  )
-    return 400_000;
   return DEFAULT_CONTEXT_WINDOW;
 }
 
@@ -155,7 +138,11 @@ function contextTokens(message: ContextHistoryMessage): number {
 }
 
 function messageTokens(message: ContextHistoryMessage, includeContext = true): number {
-  return 6 + estimateTokens(message.content) + (includeContext ? contextTokens(message) : 0);
+  return (
+    6 +
+    Math.max(0, Math.floor(message.tokenCount ?? estimateTokens(message.content))) +
+    (includeContext ? contextTokens(message) : 0)
+  );
 }
 
 function totalTokens(messages: readonly OptimizedContextMessage[], handoff: string | null): number {
@@ -175,27 +162,6 @@ function cloneMessage(
     includeContext: values.includeContext ?? true,
     compacted: values.compacted ?? false,
   };
-}
-
-function fitMessage(
-  message: ContextHistoryMessage,
-  allocation: number,
-): OptimizedContextMessage | null {
-  if (allocation < 12) return null;
-  if (messageTokens(message, true) <= allocation) return cloneMessage(message);
-  const withoutContext = messageTokens(message, false);
-  if (withoutContext <= allocation)
-    return cloneMessage(message, {
-      includeContext: contextTokens(message) === 0,
-      compacted: contextTokens(message) > 0,
-    });
-  const textBudget = allocation - 6;
-  if (textBudget < 8) return null;
-  return cloneMessage(message, {
-    content: truncateToTokens(message.content, textBudget),
-    includeContext: false,
-    compacted: true,
-  });
 }
 
 function xmlEscape(value: string): string {
@@ -303,14 +269,90 @@ export function buildContextHandoff(
   return xml;
 }
 
+function recentTurnIds(messages: readonly ContextHistoryMessage[]): Set<string> {
+  const userIndexes = messages.flatMap((message, index) =>
+    message.role === "user" ? [index] : [],
+  );
+  const start = userIndexes.at(-2) ?? Math.max(0, messages.length - 2);
+  return new Set(messages.slice(start).map((message) => message.id));
+}
+
+function isProtectedPayload(message: ContextHistoryMessage): boolean {
+  if (message.protected || message.role === "system" || message.role === "developer") return true;
+  return /(?:```|^diff --git|\b(?:error|erro|failed|falhou|approved|aprovad[oa]|não altere|do not)\b|(?:^|\s)(?:[./][\w.-]+\/|[\w.-]+\.(?:ts|tsx|js|jsx|py|json|sql|md))|\{\s*"[^"\n]+"\s*:|\b\d+(?:\.\d+){1,3}\b)/im.test(
+    message.content,
+  );
+}
+
+function toolPairIds(messages: readonly ContextHistoryMessage[]): Map<string, string[]> {
+  const pairs = new Map<string, string[]>();
+  for (const message of messages) {
+    const id = message.toolCallId ?? message.toolResultFor;
+    if (!id) continue;
+    pairs.set(id, [...(pairs.get(id) ?? []), message.id]);
+  }
+  return pairs;
+}
+
+export function validateContextFidelity(
+  source: readonly ContextHistoryMessage[],
+  optimized: readonly OptimizedContextMessage[],
+  _handoff: string | null = null,
+): ContextFidelityResult {
+  const byId = new Map(optimized.map((message) => [message.id, message]));
+  const required = recentTurnIds(source);
+  for (const message of source) if (isProtectedPayload(message)) required.add(message.id);
+  const missingMessageIds = [...required].filter((id) => {
+    const original = source.find((message) => message.id === id);
+    const current = byId.get(id);
+    if (!original || !current) return true;
+    if (original.contentKind === "tool-result" && current.artifactRef) return false;
+    return current.content !== original.content || !current.includeContext;
+  });
+  const orphanedToolCallIds: string[] = [];
+  for (const [toolCallId, ids] of toolPairIds(source)) {
+    if (ids.length < 2) continue;
+    const present = ids.filter((id) => byId.has(id)).length;
+    if (present > 0 && present < ids.length) orphanedToolCallIds.push(toolCallId);
+  }
+  const reasons = [
+    ...(missingMessageIds.length > 0 ? ["protected-or-recent-content-missing"] : []),
+    ...(orphanedToolCallIds.length > 0 ? ["orphaned-tool-pair"] : []),
+  ];
+  return {
+    passed: reasons.length === 0,
+    missingMessageIds,
+    orphanedToolCallIds,
+    reasons,
+  };
+}
+
+function validateContextBudget(
+  fidelity: ContextFidelityResult,
+  optimized: readonly OptimizedContextMessage[],
+  handoff: string | null,
+  targetTokens: number,
+): ContextFidelityResult {
+  if (totalTokens(optimized, handoff) <= targetTokens) return fidelity;
+  return {
+    ...fidelity,
+    passed: false,
+    reasons: [...new Set([...fidelity.reasons, "context-budget-exceeded"])],
+  };
+}
+
 function stats(
   original: readonly ContextHistoryMessage[],
   optimized: readonly OptimizedContextMessage[],
   handoff: string | null,
   targetTokens: number,
   techniques: string[],
+  stage: ContextOptimizationStats["stage"],
+  fidelity: ContextFidelityResult,
+  providerInputTokens?: number,
 ): ContextOptimizationStats {
-  const originalTokens = original.reduce((total, message) => total + messageTokens(message), 0);
+  const originalTokens =
+    providerInputTokens ?? original.reduce((total, message) => total + messageTokens(message), 0);
   const optimizedTokens = totalTokens(optimized, handoff);
   const savedTokens = Math.max(0, originalTokens - optimizedTokens);
   return {
@@ -328,7 +370,78 @@ function stats(
       .filter((message) => !message.includeContext)
       .reduce((total, message) => total + (message.contextLabels?.length ?? 0), 0),
     techniques,
+    stage,
+    fidelityPassed: fidelity.passed,
+    providerTokenCountUsed: providerInputTokens !== undefined,
   };
+}
+
+function externalizeLargeToolResults(
+  messages: readonly ContextHistoryMessage[],
+  thresholdTokens: number,
+  recentIds: ReadonlySet<string>,
+  store?: (message: ContextHistoryMessage) => string,
+): { messages: ContextHistoryMessage[]; changed: boolean } {
+  let changed = false;
+  const output = messages.map((message) => {
+    if (
+      message.contentKind !== "tool-result" ||
+      recentIds.has(message.id) ||
+      messageTokens(message) <= thresholdTokens
+    )
+      return message;
+    changed = true;
+    const artifactRef =
+      store?.(message) ??
+      `tool-result://sha256/${Array.from(message.content)
+        .reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 2166136261)
+        .toString(16)}`;
+    const errors = message.content
+      .split("\n")
+      .filter((line) => /(?:error|erro|failed|exception|exit code|status)/i.test(line))
+      .slice(0, 20)
+      .join("\n");
+    const head = message.content.slice(0, 2_400);
+    const tail = message.content.slice(-1_600);
+    const messageWithoutTokenCount = { ...message };
+    delete messageWithoutTokenCount.tokenCount;
+    return {
+      ...messageWithoutTokenCount,
+      content: [
+        `[tool-result-reference call=${message.toolResultFor ?? "unknown"} ref=${artifactRef}]`,
+        head,
+        errors ? `\n[errors]\n${errors}` : "",
+        tail && tail !== head ? `\n[tail]\n${tail}` : "",
+      ].join("\n"),
+      artifactRef,
+    };
+  });
+  return { messages: output, changed };
+}
+
+function closeToolPairs(
+  source: readonly ContextHistoryMessage[],
+  selected: Map<string, OptimizedContextMessage>,
+  required: ReadonlySet<string>,
+  remaining: number,
+): number {
+  for (const ids of toolPairIds(source).values()) {
+    if (ids.length < 2) continue;
+    const present = ids.filter((id) => selected.has(id));
+    if (present.length === 0 || present.length === ids.length) continue;
+    const missing = ids
+      .filter((id) => !selected.has(id))
+      .map((id) => source.find((message) => message.id === id))
+      .filter((message): message is ContextHistoryMessage => Boolean(message));
+    const needed = missing.reduce((total, message) => total + messageTokens(message), 0);
+    if (needed <= remaining || ids.some((id) => required.has(id))) {
+      for (const message of missing) selected.set(message.id, cloneMessage(message));
+      remaining -= needed;
+    } else {
+      for (const id of ids) selected.delete(id);
+    }
+  }
+  return remaining;
 }
 
 export function optimizeConversationContext(
@@ -345,10 +458,14 @@ export function optimizeConversationContext(
     Math.max(256, Math.floor(contextWindow * 0.15)),
   );
   const targetTokens = Math.max(
-    512,
+    0,
     contextWindow - reserveTokens - Math.max(0, Math.floor(options.currentInputTokens ?? 0)),
   );
   const original = input.map((message) => ({ ...message }));
+  const providerTokens =
+    typeof options.providerInputTokens === "number" && options.providerInputTokens >= 0
+      ? Math.floor(options.providerInputTokens)
+      : undefined;
 
   if (options.mode === "off") {
     const messages = original.map((message) => cloneMessage(message));
@@ -359,13 +476,24 @@ export function optimizeConversationContext(
           maxTokens: 220,
         })
       : null;
-    return { messages, handoff, stats: stats(original, messages, handoff, targetTokens, []) };
+    const fidelity = validateContextBudget(
+      validateContextFidelity(original, messages, handoff),
+      messages,
+      handoff,
+      targetTokens,
+    );
+    return {
+      messages,
+      handoff,
+      fidelity,
+      stats: stats(original, messages, handoff, targetTokens, [], "lite", fidelity, providerTokens),
+    };
   }
 
   const techniques: string[] = [];
   let whitespaceChanged = false;
   const normalized = original.map((message) => {
-    const preserveVerbatim = message.role === "system" || message.role === "developer";
+    const preserveVerbatim = isProtectedPayload(message);
     const content = preserveVerbatim ? message.content : normalizeWhitespace(message.content);
     if (content !== message.content) whitespaceChanged = true;
     return { ...message, content };
@@ -381,6 +509,10 @@ export function optimizeConversationContext(
       previous.content === message.content &&
       message.role !== "system" &&
       message.role !== "developer" &&
+      !previous.toolCallId &&
+      !previous.toolResultFor &&
+      !message.toolCallId &&
+      !message.toolResultFor &&
       !previous.hasContext &&
       !message.hasContext &&
       contextTokens(previous) === 0 &&
@@ -389,12 +521,22 @@ export function optimizeConversationContext(
   }
   if (deduplicated.length !== normalized.length) techniques.push("duplicate-removal");
 
-  const normalizedTokens = deduplicated.reduce(
+  const localNormalizedTokens = deduplicated.reduce(
     (total, message) => total + messageTokens(message),
     0,
   );
-  const triggerRatio = options.mode === "aggressive" ? 0.7 : 0.85;
-  if (normalizedTokens <= Math.floor(targetTokens * triggerRatio)) {
+  const normalizedTokens = providerTokens ?? localNormalizedTokens;
+  const loadRatio =
+    (normalizedTokens + Math.max(0, Math.floor(options.currentInputTokens ?? 0))) / contextWindow;
+  const stage: ContextOptimizationStats["stage"] =
+    loadRatio >= 0.95
+      ? "emergency"
+      : loadRatio >= 0.85
+        ? "handoff"
+        : loadRatio >= 0.7
+          ? "progressive"
+          : "lite";
+  if (stage === "lite" && localNormalizedTokens <= targetTokens) {
     const messages = deduplicated.map((message) => cloneMessage(message));
     const handoff = options.transition
       ? buildContextHandoff(deduplicated, {
@@ -404,52 +546,94 @@ export function optimizeConversationContext(
         })
       : null;
     if (handoff) techniques.push("model-handoff");
+    const fidelity = validateContextBudget(
+      validateContextFidelity(deduplicated, messages, handoff),
+      messages,
+      handoff,
+      targetTokens,
+    );
     return {
       messages,
       handoff,
-      stats: stats(original, messages, handoff, targetTokens, techniques),
+      fidelity,
+      stats: stats(
+        original,
+        messages,
+        handoff,
+        targetTokens,
+        techniques,
+        stage,
+        fidelity,
+        providerTokens,
+      ),
     };
   }
 
   techniques.push("progressive-history");
+  if (stage === "handoff") techniques.push("handoff-threshold");
+  if (stage === "emergency") techniques.push("emergency-compaction");
   const handoffBudget = Math.min(
     options.mode === "aggressive" ? 600 : 1_000,
     Math.max(160, Math.floor(targetTokens * 0.12)),
   );
   const messageBudget = Math.max(256, targetTokens - handoffBudget);
-  const system = deduplicated.filter(
+  const initialRecentIds = recentTurnIds(deduplicated);
+  const externalized = externalizeLargeToolResults(
+    deduplicated,
+    Math.max(512, Math.floor(targetTokens * 0.12)),
+    initialRecentIds,
+    options.storeToolResult,
+  );
+  if (externalized.changed) techniques.push("tool-result-reference");
+  const working = externalized.messages;
+  const system = working.filter(
     (message) => message.role === "system" || message.role === "developer",
   );
-  const nonSystem = deduplicated.filter(
+  const nonSystem = working.filter(
     (message) => message.role !== "system" && message.role !== "developer",
   );
-  const recentCount = options.mode === "aggressive" ? 4 : 8;
-  const recent = nonSystem.slice(-recentCount);
+  const recentBudget = Math.max(
+    2_000,
+    Math.min(8_000, Math.floor(options.recentTokenBudget ?? targetTokens * 0.4)),
+  );
+  let recentStart = nonSystem.length;
+  let recentTokens = 0;
+  let recentUsers = 0;
+  while (recentStart > 0 && (recentTokens < recentBudget || recentUsers < 2)) {
+    recentStart -= 1;
+    const message = nonSystem[recentStart]!;
+    recentTokens += messageTokens(message);
+    if (message.role === "user") recentUsers += 1;
+  }
+  const recent = nonSystem.slice(recentStart);
   const older = nonSystem.slice(0, Math.max(0, nonSystem.length - recent.length));
+  const required = new Set<string>(recent.map((message) => message.id));
+  for (const message of working) if (isProtectedPayload(message)) required.add(message.id);
   const selected = new Map<string, OptimizedContextMessage>();
   let remaining = messageBudget;
 
-  for (let index = 0; index < system.length; index += 1) {
-    const message = system[index]!;
-    const allocation = Math.max(32, Math.floor(remaining / Math.max(1, system.length - index)));
-    const fitted = fitMessage(message, allocation);
-    if (!fitted) continue;
-    selected.set(message.id, fitted);
-    remaining -= messageTokens(fitted, fitted.includeContext);
+  for (const message of system) {
+    const exact = cloneMessage(message);
+    selected.set(message.id, exact);
+    remaining -= messageTokens(exact, exact.includeContext);
   }
 
-  for (let index = 0; index < recent.length; index += 1) {
-    const message = recent[index]!;
-    const countLeft = recent.length - index;
-    const allocation = Math.max(24, Math.floor(remaining / Math.max(1, countLeft)));
-    const fitted = fitMessage(message, allocation);
-    if (!fitted) continue;
-    selected.set(message.id, fitted);
-    remaining -= messageTokens(fitted, fitted.includeContext);
+  for (const message of recent) {
+    const exact = cloneMessage(message);
+    selected.set(message.id, exact);
+    remaining -= messageTokens(exact, exact.includeContext);
+  }
+
+  for (const message of older.filter(isProtectedPayload)) {
+    if (selected.has(message.id)) continue;
+    const exact = cloneMessage(message);
+    selected.set(message.id, exact);
+    remaining -= messageTokens(exact, exact.includeContext);
   }
 
   for (let index = older.length - 1; index >= 0 && remaining >= 24; index -= 1) {
     const message = older[index]!;
+    if (selected.has(message.id) || message.contentKind === "image") continue;
     let fitted = messageTokens(message, true) <= remaining ? cloneMessage(message) : null;
     if (!fitted && contextTokens(message) > 0 && messageTokens(message, false) <= remaining)
       fitted = cloneMessage(message, { includeContext: false, compacted: true });
@@ -458,14 +642,18 @@ export function optimizeConversationContext(
     remaining -= messageTokens(fitted, fitted.includeContext);
   }
 
-  const messages = deduplicated
+  if (older.some((message) => message.contentKind === "image" && !selected.has(message.id)))
+    techniques.push("image-pruning");
+  remaining = closeToolPairs(working, selected, required, remaining);
+
+  let messages = working
     .map((message) => selected.get(message.id))
     .filter((message): message is OptimizedContextMessage => Boolean(message));
-  const dropped = deduplicated.filter((message) => !selected.has(message.id));
+  const dropped = working.filter((message) => !selected.has(message.id));
   const omittedLabels = messages
     .filter((message) => !message.includeContext)
     .flatMap((message) => message.contextLabels ?? []);
-  const handoffSource = dropped.length > 0 ? dropped : deduplicated;
+  const handoffSource = dropped.length > 0 ? dropped : working;
   const handoff = buildContextHandoff(handoffSource, {
     ...(options.transition ? { transition: options.transition } : {}),
     reason: options.transition ? "model-switch" : "token-budget",
@@ -475,6 +663,44 @@ export function optimizeConversationContext(
   if (handoff) techniques.push(options.transition ? "model-handoff" : "extractive-handoff");
   if (messages.some((message) => message.compacted)) techniques.push("message-compaction");
   if (dropped.length > 0) techniques.push("history-pruning");
+  let fidelity = validateContextBudget(
+    validateContextFidelity(working, messages, handoff),
+    messages,
+    handoff,
+    targetTokens,
+  );
+  if (!fidelity.passed) {
+    // A compressed candidate that loses protected values or tool structure is
+    // discarded. Rebuild from exact required messages and complete pairs.
+    techniques.push("fidelity-fallback");
+    const fallback = new Map<string, OptimizedContextMessage>();
+    for (const message of working)
+      if (required.has(message.id)) fallback.set(message.id, cloneMessage(message));
+    closeToolPairs(working, fallback, required, Number.POSITIVE_INFINITY);
+    messages = working
+      .map((message) => fallback.get(message.id))
+      .filter((message): message is OptimizedContextMessage => Boolean(message));
+    fidelity = validateContextBudget(
+      validateContextFidelity(working, messages, handoff),
+      messages,
+      handoff,
+      targetTokens,
+    );
+  }
 
-  return { messages, handoff, stats: stats(original, messages, handoff, targetTokens, techniques) };
+  return {
+    messages,
+    handoff,
+    fidelity,
+    stats: stats(
+      original,
+      messages,
+      handoff,
+      targetTokens,
+      techniques,
+      stage,
+      fidelity,
+      providerTokens,
+    ),
+  };
 }
