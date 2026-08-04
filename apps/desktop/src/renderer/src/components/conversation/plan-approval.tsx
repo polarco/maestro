@@ -191,7 +191,10 @@ export function PlanApprovalCard({
                       </label>
                     ) : null}
                     <p className="text-[8.5px] leading-4 text-text-faint">
-                      Rede: {plan.executionPolicy.network} · Mutações externas: bloqueadas
+                      Rede: {plan.executionPolicy.network} · Mutações externas:{" "}
+                      {plan.executionPolicy.externalMutations
+                        ? "incluídas nesta aprovação explícita"
+                        : "bloqueadas"}
                     </p>
                   </div>
                 ) : null}

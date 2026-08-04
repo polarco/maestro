@@ -56,6 +56,45 @@ const api: MaestroDesktopApi = {
   deleteConversation: (conversationId) =>
     ipcRenderer.invoke(IPC_CHANNELS.conversationDelete, conversationId),
   sendMessage: (input) => ipcRenderer.invoke(IPC_CHANNELS.messageSend, input),
+  getSessionTimeline: (sessionId, cursor, limit, branchId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.sessionTimeline, sessionId, cursor, limit, branchId),
+  sendTurn: (input) => ipcRenderer.invoke(IPC_CHANNELS.turnSend, input),
+  editTurn: (input) => ipcRenderer.invoke(IPC_CHANNELS.turnEdit, input),
+  retryTurn: (input) => ipcRenderer.invoke(IPC_CHANNELS.turnRetry, input),
+  forkAtTurn: (input) => ipcRenderer.invoke(IPC_CHANNELS.turnFork, input),
+  switchBranch: (sessionId, branchId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.branchSwitch, sessionId, branchId),
+  listArtifacts: (projectId, sessionId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.artifactList, projectId, sessionId),
+  openArtifact: (artifactId) => ipcRenderer.invoke(IPC_CHANNELS.artifactOpen, artifactId),
+  createArtifact: (input) => ipcRenderer.invoke(IPC_CHANNELS.artifactCreate, input),
+  updateArtifact: (input) => ipcRenderer.invoke(IPC_CHANNELS.artifactUpdate, input),
+  exportArtifact: (artifactId, version) =>
+    ipcRenderer.invoke(IPC_CHANNELS.artifactExport, artifactId, version),
+  listMemories: (filter) => ipcRenderer.invoke(IPC_CHANNELS.memoryList, filter),
+  saveMemory: (input) => ipcRenderer.invoke(IPC_CHANNELS.memorySave, input),
+  acceptMemory: (memoryId) => ipcRenderer.invoke(IPC_CHANNELS.memoryAccept, memoryId),
+  updateMemory: (input) => ipcRenderer.invoke(IPC_CHANNELS.memoryUpdate, input),
+  forgetMemory: (memoryId) => ipcRenderer.invoke(IPC_CHANNELS.memoryForget, memoryId),
+  listConnectors: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.connectorList, projectId),
+  configureConnector: (input) => ipcRenderer.invoke(IPC_CHANNELS.connectorConfigure, input),
+  listConnectorGrants: (connectorId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.connectorGrants, connectorId),
+  grantConnector: (input) => ipcRenderer.invoke(IPC_CHANNELS.connectorGrant, input),
+  revokeConnector: (connectorId, grantId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.connectorRevoke, connectorId, grantId),
+  listConnectorInvocations: (connectorId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.connectorInvocations, connectorId),
+  setProjectAutonomy: (projectId, level) =>
+    ipcRenderer.invoke(IPC_CHANNELS.autonomySet, projectId, level),
+  getProjectAutonomy: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.autonomyGet, projectId),
+  listJobs: (projectId, activeOnly) =>
+    ipcRenderer.invoke(IPC_CHANNELS.jobList, projectId, activeOnly),
+  getJob: (jobId) => ipcRenderer.invoke(IPC_CHANNELS.jobGet, jobId),
+  steerJob: (input) => ipcRenderer.invoke(IPC_CHANNELS.jobSteer, input),
+  globalSearch: (projectId, query, limit) =>
+    ipcRenderer.invoke(IPC_CHANNELS.globalSearch, projectId, query, limit),
+  openExternalUrl: (url) => ipcRenderer.invoke(IPC_CHANNELS.externalOpen, url),
   getRun: (runId) => ipcRenderer.invoke(IPC_CHANNELS.runGet, runId),
   getRunEvents: (runId, afterSequence, limit) =>
     ipcRenderer.invoke(IPC_CHANNELS.runEvents, runId, afterSequence, limit),

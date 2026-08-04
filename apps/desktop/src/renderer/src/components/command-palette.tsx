@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Clock3,
+  Activity,
   Command,
   LayoutDashboard,
   MessageSquare,
@@ -9,9 +10,10 @@ import {
   Settings,
   SquareTerminal,
 } from "lucide-react";
-import type { BootstrapPayload } from "@maestro/contracts";
+import type { BootstrapPayload, GlobalSearchResult } from "@maestro/contracts";
 import { useAppStore, type AppView } from "@renderer/store/app-store";
 import { relativeTime } from "@renderer/lib/utils";
+import { api } from "@renderer/lib/api";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -46,6 +48,8 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  const [globalResults, setGlobalResults] = useState<GlobalSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
 
   const navigate = (view: AppView) => {
     setView(view);
@@ -54,6 +58,14 @@ export function CommandPalette({
 
   const items = useMemo<PaletteItem[]>(
     () => [
+      {
+        id: "mission-control",
+        label: "Mission Control",
+        detail: "Acompanhe agentes e trabalhos em background",
+        icon: Activity,
+        keywords: "agentes tarefas jobs background execução",
+        action: () => navigate({ type: "mission-control" }),
+      },
       {
         id: "new",
         label: "Nova conversa",
@@ -114,6 +126,24 @@ export function CommandPalette({
     if (!needle) return items;
     return items.filter((item) => normalize(`${item.label} ${item.keywords}`).includes(needle));
   }, [items, query]);
+  const globalItems = useMemo<PaletteItem[]>(
+    () =>
+      globalResults.map((result) => ({
+        id: `global-${result.type}-${result.id}`,
+        label: result.title,
+        detail: `${result.type} · ${result.excerpt.replace(/<\/?mark>/g, "")}`,
+        icon: result.type === "conversation" || result.type === "message" ? MessageSquare : Search,
+        keywords: `${result.type} ${result.title} ${result.excerpt}`,
+        action: () =>
+          navigate(
+            result.sessionId
+              ? { type: "conversation", id: result.sessionId }
+              : { type: "dashboard" },
+          ),
+      })),
+    [globalResults],
+  );
+  const visibleItems = query.trim().length >= 2 ? [...filtered, ...globalItems] : filtered;
 
   useEffect(() => {
     if (!open) return;
@@ -125,6 +155,35 @@ export function CommandPalette({
   useEffect(() => setSelected(0), [query]);
 
   useEffect(() => {
+    const projectId = bootstrap.activeProjectId;
+    const value = query.trim();
+    if (!open || !projectId || value.length < 2) {
+      setGlobalResults([]);
+      setSearching(false);
+      return;
+    }
+    let active = true;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void api()
+        .globalSearch(projectId, value, 20)
+        .then((results) => {
+          if (active) setGlobalResults(results);
+        })
+        .catch(() => {
+          if (active) setGlobalResults([]);
+        })
+        .finally(() => {
+          if (active) setSearching(false);
+        });
+    }, 160);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [bootstrap.activeProjectId, open, query]);
+
+  useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -132,20 +191,20 @@ export function CommandPalette({
         onClose();
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
-        setSelected((value) => (filtered.length ? (value + 1) % filtered.length : 0));
+        setSelected((value) => (visibleItems.length ? (value + 1) % visibleItems.length : 0));
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
         setSelected((value) =>
-          filtered.length ? (value - 1 + filtered.length) % filtered.length : 0,
+          visibleItems.length ? (value - 1 + visibleItems.length) % visibleItems.length : 0,
         );
-      } else if (event.key === "Enter" && filtered[selected]) {
+      } else if (event.key === "Enter" && visibleItems[selected]) {
         event.preventDefault();
-        filtered[selected].action();
+        visibleItems[selected].action();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filtered, onClose, open, selected]);
+  }, [onClose, open, selected, visibleItems]);
 
   if (!open) return null;
 
@@ -177,8 +236,8 @@ export function CommandPalette({
           </kbd>
         </div>
         <div className="max-h-[430px] overflow-y-auto p-2">
-          {filtered.length ? (
-            filtered.map((item, index) => {
+          {visibleItems.length ? (
+            visibleItems.map((item, index) => {
               const Icon = item.icon;
               const recent = item.id.startsWith("conversation-");
               return (
@@ -223,14 +282,18 @@ export function CommandPalette({
                 <Command size={19} />
               </div>
               <p className="mt-3 text-[13px] font-medium text-text">Nada encontrado</p>
-              <p className="mt-1 text-[11px] text-text-faint">Tente buscar por outro termo.</p>
+              <p className="mt-1 text-[11px] text-text-faint">
+                {searching ? "Buscando no índice local…" : "Tente buscar por outro termo."}
+              </p>
             </div>
           )}
         </div>
         <footer className="flex h-10 items-center gap-4 border-t border-border bg-bg-elevated/55 px-4 text-[10px] text-text-faint">
           <span>↑↓ navegar</span>
           <span>↵ abrir</span>
-          <span className="ml-auto">Busca rápida do Maestro</span>
+          <span className="ml-auto">
+            {searching ? "Buscando mensagens, artefatos e memórias…" : "Índice local FTS5"}
+          </span>
         </footer>
       </section>
     </div>

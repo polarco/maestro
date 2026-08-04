@@ -26,8 +26,33 @@ export interface CapturedProcessResult {
   durationMs: number;
 }
 
+interface ManagedResource {
+  id: string;
+  label: string;
+  pid: number | undefined;
+  startedAt: number;
+  close: () => Promise<void>;
+}
+
 export class ProcessSupervisor {
   readonly #processes = new Map<string, ManagedProcess>();
+  readonly #resources = new Map<string, ManagedResource>();
+
+  /** Tracks transports that own their child process or socket lifecycle. */
+  trackResource(input: { label: string; pid?: number | null; close: () => Promise<void> }): {
+    id: string;
+    release: () => void;
+  } {
+    const id = randomUUID();
+    this.#resources.set(id, {
+      id,
+      label: input.label,
+      pid: input.pid ?? undefined,
+      startedAt: Date.now(),
+      close: input.close,
+    });
+    return { id, release: () => this.#resources.delete(id) };
+  }
 
   spawn(spec: ManagedProcessSpec): ManagedProcess {
     if (!spec.executable.trim()) throw new MaestroError("INVALID_EXECUTABLE", "Executável vazio.");
@@ -134,7 +159,14 @@ export class ProcessSupervisor {
 
   async kill(id: string): Promise<void> {
     const managed = this.#processes.get(id);
-    if (!managed || managed.child.exitCode !== null) return;
+    if (!managed) {
+      const resource = this.#resources.get(id);
+      if (!resource) return;
+      this.#resources.delete(id);
+      await resource.close().catch(() => undefined);
+      return;
+    }
+    if (managed.child.exitCode !== null) return;
     const pid = managed.child.pid;
     if (pid === undefined) return;
 
@@ -181,15 +213,25 @@ export class ProcessSupervisor {
   }
 
   async killAll(): Promise<void> {
-    await Promise.allSettled([...this.#processes.keys()].map((id) => this.kill(id)));
+    await Promise.allSettled(
+      [...this.#processes.keys(), ...this.#resources.keys()].map((id) => this.kill(id)),
+    );
   }
 
   list(): Array<{ id: string; label: string; pid: number | undefined; startedAt: number }> {
-    return [...this.#processes.values()].map((item) => ({
-      id: item.id,
-      label: item.label,
-      pid: item.child.pid,
-      startedAt: item.startedAt,
-    }));
+    return [
+      ...[...this.#processes.values()].map((item) => ({
+        id: item.id,
+        label: item.label,
+        pid: item.child.pid,
+        startedAt: item.startedAt,
+      })),
+      ...[...this.#resources.values()].map(({ id, label, pid, startedAt }) => ({
+        id,
+        label,
+        pid,
+        startedAt,
+      })),
+    ];
   }
 }

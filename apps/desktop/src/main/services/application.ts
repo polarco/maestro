@@ -1,41 +1,65 @@
 import path from "node:path";
-import { realpath } from "node:fs/promises";
-import { app, clipboard, dialog, nativeTheme } from "electron";
+import { realpath, writeFile } from "node:fs/promises";
+import { app, clipboard, dialog, nativeTheme, shell } from "electron";
 import {
   DEFAULT_APP_SETTINGS,
   appSettingsSchema,
   type AppSettings,
+  type Artifact,
+  type ArtifactDetail,
+  type AutonomyLevel,
+  type AutonomyProfile,
+  type BackgroundJob,
   type AnswerQuestionsInput,
   type BootstrapPayload,
   type CompactTurnInput,
+  type ConfigureConnectorInput,
   type ConfigureProviderInput,
   type ContextAssetSummary,
   type ContextProcessingEvent,
   type ContextCheckpoint,
+  type Connector,
+  type ConnectorGrant,
+  type ConnectorGrantInput,
+  type ConnectorInvocation,
+  type CreateArtifactInput,
   type CreateProviderConnectionInput,
   type Conversation,
   type ConversationDetail,
   type CreateConversationInput,
   type CreateProjectInput,
   type EventPage,
+  type EditTurnInput,
+  type ForkAtTurnInput,
   type ForkConversationInput,
   type GranularApprovalInput,
+  type GlobalSearchResult,
   type PlanSpec,
   type Project,
   type LocalModelPackageState,
+  type MemoryFilter,
+  type MemoryRecord,
   type ProviderSummary,
   type ProviderConnectionSummary,
   type RunDetail,
   type RunEvent,
   type RunState,
+  type SaveMemoryInput,
   type SendMessageInput,
   type SendMessageResult,
+  type SendTurnInput,
+  type SessionBranch,
+  type SessionTimelinePage,
   type PrepareWorkspaceContextInput,
   type SearchWorkspaceContextInput,
   type StageRecordedAudioInput,
+  type SteerJobInput,
   type SteerTurnInput,
   type SwitchModelInput,
   type TurnStatusInspection,
+  type RetryTurnInput,
+  type UpdateArtifactInput,
+  type UpdateMemoryInput,
   type WorkspaceContextCandidate,
   type TerminalEvent,
   type TerminalSessionDto,
@@ -54,6 +78,9 @@ import { OrchestrationService } from "./orchestration.js";
 import { TerminalService } from "./terminal.js";
 import { UpdateService } from "./update-service.js";
 import { ContextService } from "./context-service.js";
+import { WebResearchService } from "./web-research.js";
+import { ConnectorService, validateConnectorConfiguration } from "./connector-service.js";
+import { MemoryIndexService } from "./memory-index.js";
 
 interface Grant {
   path: string;
@@ -82,6 +109,9 @@ export class ApplicationService {
   readonly context: ContextService;
   readonly terminal: TerminalService;
   readonly updates: UpdateService;
+  readonly webResearch: WebResearchService;
+  readonly connectorRuntime: ConnectorService;
+  readonly memoryIndex: MemoryIndexService;
   readonly #directoryGrants = new Map<string, Grant>();
   #settingsUpdateTail: Promise<void> = Promise.resolve();
   #runEventHandler: (event: RunEvent) => void = () => {};
@@ -106,13 +136,34 @@ export class ApplicationService {
       emitContext: (event) => this.#contextEventHandler(event),
       emitModel: (state) => this.#localModelEventHandler(state),
     });
+    this.webResearch = new WebResearchService({
+      repository: this.repository,
+      credentials: this.vault,
+    });
+    this.connectorRuntime = new ConnectorService({
+      repository: this.repository,
+      credentials: this.vault,
+      supervisor: this.supervisor,
+    });
+    this.memoryIndex = new MemoryIndexService({ userDataDirectory });
     this.orchestration = new OrchestrationService({
       repository: this.repository,
       providers: this.providers,
       supervisor: this.supervisor,
       userDataDirectory,
       context: this.context,
-      emit: (event) => this.#runEventHandler(event),
+      webResearch: this.webResearch,
+      connectorRuntime: this.connectorRuntime,
+      memoryIndex: this.memoryIndex,
+      emit: (event) => {
+        if (event.type === "run.state" && event.data.to === "completed") {
+          void this.#extractRunMemories(event.runId)
+            .catch(() => undefined)
+            .finally(() => this.#runEventHandler(event));
+          return;
+        }
+        this.#runEventHandler(event);
+      },
     });
     this.terminal = new TerminalService(this.repository, (event) =>
       this.#terminalEventHandler(event),
@@ -167,6 +218,12 @@ export class ApplicationService {
       this.repository.getSettings(),
       this.vault.status(),
     ]);
+    const [autonomyProfiles, activeJobs] = activeProjectId
+      ? await Promise.all([
+          Promise.all(projects.map((project) => this.repository.getProjectAutonomy(project.id))),
+          this.repository.listJobs(activeProjectId, true),
+        ])
+      : [[], []];
     return {
       app: {
         name: app.getName(),
@@ -183,6 +240,8 @@ export class ApplicationService {
       settings,
       vault,
       update: this.updates.state,
+      autonomyProfiles,
+      activeJobs,
     };
   }
 
@@ -421,7 +480,9 @@ export class ApplicationService {
         { recoverable: true },
       );
     const activeProjectId = await this.repository.getActiveProjectId();
+    const projectMemories = await this.repository.listMemories({ projectId });
     await this.context.removeProjectFiles(projectId);
+    await this.memoryIndex.remove(projectMemories.map((memory) => memory.id));
     await this.repository.deleteProject(projectId);
     this.context.invalidateProject(projectId);
     const remaining = await this.repository.listProjects();
@@ -493,12 +554,19 @@ export class ApplicationService {
 
   async getConversation(conversationId: string): Promise<ConversationDetail> {
     await this.context.refreshWorkspaceReferences(conversationId);
-    const [conversation, messages, runs] = await Promise.all([
+    const [conversation, messages, runs, branches] = await Promise.all([
       this.repository.getConversation(conversationId),
       this.repository.listMessages(conversationId),
       this.repository.listRuns({ conversationId }),
+      this.repository.listSessionBranches(conversationId),
     ]);
-    return { conversation, messages, runs };
+    return {
+      conversation,
+      messages,
+      runs,
+      branches,
+      activeBranchId: conversation.activeBranchId ?? null,
+    };
   }
 
   updateConversation(input: UpdateConversationInput): Promise<Conversation> {
@@ -522,6 +590,248 @@ export class ApplicationService {
 
   async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     return this.orchestration.sendMessage(input);
+  }
+
+  async #extractRunMemories(runId: string): Promise<void> {
+    const run = await this.repository.getRun(runId);
+    const [messages, turns, settings] = await Promise.all([
+      this.repository.listMessages(run.conversationId, run.branchId),
+      this.repository.listTurns({ conversationId: run.conversationId }),
+      this.repository.getSettings(),
+    ]);
+    const turnByInput = new Map(
+      turns.flatMap((turn) =>
+        turn.inputMessageId ? [[turn.inputMessageId, turn.id] as const] : [],
+      ),
+    );
+    for (const message of messages) {
+      if (message.role !== "user" || message.runId !== runId) continue;
+      const turnId = turnByInput.get(message.id) ?? null;
+      await this.repository.suggestMemoriesFromMessage(message, turnId, "project");
+      if (settings.personalMemoryEnabled)
+        await this.repository.suggestMemoriesFromMessage(message, turnId, "personal");
+    }
+  }
+
+  getSessionTimeline(
+    sessionId: string,
+    cursor?: number,
+    limit?: number,
+    branchId?: string,
+  ): Promise<SessionTimelinePage> {
+    return this.repository.getSessionTimeline(sessionId, cursor, limit, branchId);
+  }
+
+  sendTurn(input: SendTurnInput): Promise<SendMessageResult> {
+    return this.sendMessage({ ...input, mode: "maestro", sessionKind: "structured" });
+  }
+
+  async editTurn(input: EditTurnInput): Promise<SendMessageResult> {
+    const turn = await this.repository.getTurn(input.turnId);
+    if (turn.conversationId !== input.conversationId)
+      throw new MaestroError("TURN_SESSION_MISMATCH", "O turno não pertence a esta conversa.");
+    await this.repository.forkAtTurn({
+      sessionId: input.conversationId,
+      turnId: input.turnId,
+      name: "Edição",
+    });
+    return this.sendTurn(input);
+  }
+
+  async retryTurn(input: RetryTurnInput): Promise<SendMessageResult> {
+    const turn = await this.repository.getTurn(input.turnId);
+    const conversation = await this.repository.getConversation(turn.conversationId);
+    const messages = await this.repository.listMessages(conversation.id, turn.branchId);
+    const source = messages.find((message) => message.id === turn.inputMessageId);
+    if (!source)
+      throw new MaestroError("TURN_INPUT_NOT_FOUND", "A mensagem original do turno não existe.");
+    if (!conversation.workspaceRootId || !conversation.providerId || !conversation.modelId)
+      throw new MaestroError(
+        "TURN_CONFIGURATION_MISSING",
+        "A conversa não possui configuração suficiente para repetir o turno.",
+      );
+    await this.repository.forkAtTurn({
+      sessionId: conversation.id,
+      turnId: turn.id,
+      name: "Nova tentativa",
+    });
+    return this.sendTurn({
+      conversationId: conversation.id,
+      content: source.content,
+      mode: "maestro",
+      sessionKind: "structured",
+      providerId: conversation.providerId,
+      ...(conversation.providerConnectionId
+        ? { providerConnectionId: conversation.providerConnectionId }
+        : {}),
+      modelId: conversation.modelId,
+      effort: turn.selectedModel?.effort ?? "medium",
+      workspaceRootId: conversation.workspaceRootId,
+      contextItems: source.contextAssets.map((asset) => ({ type: "asset", assetId: asset.id })),
+      modelPreference: turn.modelPreference,
+      strategyOverride: input.strategyOverride ?? turn.intent.path,
+    });
+  }
+
+  forkAtTurn(input: ForkAtTurnInput): Promise<SessionBranch> {
+    return this.repository.forkAtTurn(input);
+  }
+
+  async switchBranch(sessionId: string, branchId: string): Promise<SessionTimelinePage> {
+    await this.repository.switchSessionBranch(sessionId, branchId);
+    return this.repository.getSessionTimeline(sessionId, undefined, 250, branchId);
+  }
+
+  listArtifacts(projectId: string, sessionId?: string): Promise<Artifact[]> {
+    return this.repository.listArtifacts(projectId, sessionId);
+  }
+
+  openArtifact(artifactId: string): Promise<ArtifactDetail> {
+    return this.repository.openArtifact(artifactId);
+  }
+
+  createArtifact(input: CreateArtifactInput): Promise<ArtifactDetail> {
+    return this.repository.createArtifact(input);
+  }
+
+  updateArtifact(input: UpdateArtifactInput): Promise<ArtifactDetail> {
+    return this.repository.updateArtifact(input);
+  }
+
+  async exportArtifact(artifactId: string, version?: number): Promise<string | null> {
+    const detail = await this.repository.openArtifact(artifactId);
+    const selected = version
+      ? detail.versions.find((candidate) => candidate.version === version)
+      : detail.versions[0];
+    if (!selected) throw new MaestroError("ARTIFACT_VERSION_NOT_FOUND", "Versão não encontrada.");
+    const extension: Record<Artifact["kind"], string> = {
+      markdown: "md",
+      code: detail.artifact.language || "txt",
+      diff: "diff",
+      json: "json",
+      html: "html",
+      svg: "svg",
+    };
+    const safeName = detail.artifact.title.replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 120);
+    const result = await dialog.showSaveDialog({
+      title: "Exportar artefato",
+      defaultPath: `${safeName || "artefato"}.${extension[detail.artifact.kind]}`,
+    });
+    if (result.canceled || !result.filePath) return null;
+    await writeFile(result.filePath, selected.content, "utf8");
+    return result.filePath;
+  }
+
+  async listMemories(filter: MemoryFilter): Promise<MemoryRecord[]> {
+    const lexical = await this.repository.listMemories(filter);
+    const query = filter.query?.trim();
+    if (!query || !(await this.repository.getSettings()).semanticMemoryEnabled) return lexical;
+    const candidates = await this.repository.listMemories({
+      ...(filter.projectId ? { projectId: filter.projectId } : {}),
+      ...(filter.scope ? { scope: filter.scope } : {}),
+      ...(filter.state ? { state: filter.state } : {}),
+    });
+    const semantic = await this.memoryIndex.rank(candidates, query).catch(() => null);
+    if (!semantic) return lexical;
+    return [...new Map([...lexical, ...semantic].map((memory) => [memory.id, memory])).values()];
+  }
+
+  saveMemory(input: SaveMemoryInput): Promise<MemoryRecord> {
+    return this.repository.saveMemory(input);
+  }
+
+  acceptMemory(memoryId: string): Promise<MemoryRecord> {
+    return this.repository.updateMemory({ memoryId, state: "accepted" });
+  }
+
+  async updateMemory(input: UpdateMemoryInput): Promise<MemoryRecord> {
+    const memory = await this.repository.updateMemory(input);
+    if (input.content !== undefined) await this.memoryIndex.remove([memory.id]);
+    return memory;
+  }
+
+  async forgetMemory(memoryId: string): Promise<MemoryRecord> {
+    const memory = await this.repository.updateMemory({ memoryId, state: "forgotten" });
+    await this.memoryIndex.remove([memoryId]);
+    return memory;
+  }
+
+  listConnectors(projectId: string): Promise<Connector[]> {
+    return this.repository.listConnectors(projectId);
+  }
+
+  async configureConnector(input: ConfigureConnectorInput): Promise<Connector> {
+    const connector = await this.repository.configureConnector({
+      ...input,
+      config: validateConnectorConfiguration(input.kind, input.config),
+    });
+    if (input.credential !== undefined)
+      await this.vault.set(`connector:${connector.id}:credential`, input.credential);
+    return connector;
+  }
+
+  listConnectorGrants(connectorId: string): Promise<ConnectorGrant[]> {
+    return this.repository.listConnectorGrants(connectorId);
+  }
+
+  grantConnector(input: ConnectorGrantInput): Promise<ConnectorGrant> {
+    return this.repository.grantConnector(input);
+  }
+
+  revokeConnector(connectorId: string, grantId: string): Promise<ConnectorGrant> {
+    return this.repository.revokeConnector(connectorId, grantId);
+  }
+
+  listConnectorInvocations(connectorId: string): Promise<ConnectorInvocation[]> {
+    return this.repository.listConnectorInvocations(connectorId);
+  }
+
+  setProjectAutonomy(projectId: string, level: AutonomyLevel): Promise<AutonomyProfile> {
+    return this.repository.setProjectAutonomy(projectId, level);
+  }
+
+  getProjectAutonomy(projectId: string): Promise<AutonomyProfile> {
+    return this.repository.getProjectAutonomy(projectId);
+  }
+
+  listJobs(projectId: string, activeOnly?: boolean): Promise<BackgroundJob[]> {
+    return this.repository.listJobs(projectId, activeOnly);
+  }
+
+  getJob(jobId: string): Promise<BackgroundJob> {
+    return this.repository.getJob(jobId);
+  }
+
+  async steerJob(input: SteerJobInput): Promise<BackgroundJob> {
+    const job = await this.repository.getJob(input.jobId);
+    if (input.action === "cancel") {
+      if (job.runId) await this.orchestration.cancel(job.runId);
+      return this.repository.updateJob(job.id, { state: "canceled" });
+    }
+    if (input.action === "pause")
+      return this.repository.updateJob(job.id, {
+        state: "blocked",
+        detail: { ...job.detail, steering: input.message ?? "Pausado pelo usuário" },
+      });
+    if (input.action === "resume")
+      return this.repository.updateJob(job.id, {
+        state: "queued",
+        detail: { ...job.detail, steering: input.message ?? "Retomado pelo usuário" },
+      });
+    return this.repository.updateJob(job.id, {
+      detail: { ...job.detail, priority: "high", steering: input.message ?? null },
+    });
+  }
+
+  globalSearch(projectId: string, query: string, limit?: number): Promise<GlobalSearchResult[]> {
+    return this.repository.globalSearch(projectId, query, limit);
+  }
+
+  async openExternalUrl(value: string): Promise<void> {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:")
+      throw new MaestroError("EXTERNAL_URL_DENIED", "Somente links HTTP(S) podem ser abertos.");
+    await shell.openExternal(url.toString());
   }
 
   getRun(runId: string): Promise<RunDetail> {

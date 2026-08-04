@@ -7,6 +7,7 @@ export type AppView =
   | { type: "run"; id: string }
   | { type: "terminal" }
   | { type: "history" }
+  | { type: "mission-control" }
   | { type: "settings" };
 
 interface AppStore {

@@ -1,10 +1,20 @@
 import type {
   AppSettings,
+  Artifact,
+  ArtifactKind,
+  ArtifactVersion,
+  AutonomyLevel,
+  AutonomyProfile,
+  BackgroundJob,
+  Connector,
+  ConnectorGrant,
+  ConnectorInvocation,
   ContextAssetSummary,
   ContextItemInput,
   Conversation,
   Effort,
   Message,
+  MemoryRecord,
   ModelPreference,
   ModelSelection,
   PlanSpec,
@@ -15,6 +25,9 @@ import type {
   SessionKind,
   ContextCheckpoint,
   Turn,
+  TurnPath,
+  TimelineItem,
+  SessionBranch,
 } from "./domain.js";
 import type { EventPage, RunEvent } from "./events.js";
 import type {
@@ -66,12 +79,27 @@ export interface BootstrapPayload {
   settings: AppSettings;
   vault: VaultStatus;
   update: UpdateState;
+  autonomyProfiles?: AutonomyProfile[];
+  activeJobs?: BackgroundJob[];
 }
 
 export interface ConversationDetail {
   conversation: Conversation;
   messages: Message[];
   runs: Run[];
+  branches?: SessionBranch[];
+  activeBranchId?: string | null;
+}
+
+export interface SessionTimelinePage {
+  sessionId: string;
+  activeBranchId: string | null;
+  branches: SessionBranch[];
+  items: TimelineItem[];
+  cursor: number;
+  total: number;
+  previousCursor: number | null;
+  nextCursor: number | null;
 }
 
 export interface CreateProjectInput {
@@ -112,6 +140,113 @@ export interface SendMessageInput {
   workspaceRootId: string;
   contextItems: ContextItemInput[];
   modelPreference?: ModelPreference;
+  /** Additive Maestro Next fields; legacy callers may omit them. */
+  strategyOverride?: TurnPath;
+  branchId?: string;
+}
+
+export type SendTurnInput = SendMessageInput;
+
+export interface EditTurnInput extends SendTurnInput {
+  turnId: string;
+}
+
+export interface RetryTurnInput {
+  turnId: string;
+  strategyOverride?: TurnPath;
+}
+
+export interface ForkAtTurnInput {
+  sessionId: string;
+  turnId: string;
+  name?: string;
+}
+
+export interface CreateArtifactInput {
+  projectId: string;
+  sessionId?: string;
+  branchId?: string;
+  turnId?: string;
+  title: string;
+  kind: ArtifactKind;
+  language?: string;
+  mimeType?: string;
+  content: string;
+  pinned?: boolean;
+  createdBy?: ArtifactVersion["createdBy"];
+}
+
+export interface UpdateArtifactInput {
+  artifactId: string;
+  content: string;
+  title?: string;
+  language?: string | null;
+  pinned?: boolean;
+  createdBy?: ArtifactVersion["createdBy"];
+  sourceEventId?: string;
+}
+
+export interface ArtifactDetail {
+  artifact: Artifact;
+  versions: ArtifactVersion[];
+}
+
+export interface MemoryFilter {
+  projectId?: string;
+  scope?: "project" | "personal";
+  state?: MemoryRecord["state"];
+  query?: string;
+}
+
+export interface UpdateMemoryInput {
+  memoryId: string;
+  content?: string;
+  confidence?: number;
+  expiresAt?: string | null;
+}
+
+export interface SaveMemoryInput {
+  projectId: string;
+  sessionId: string;
+  turnId?: string | null;
+  messageId?: string | null;
+  kind?: MemoryRecord["kind"];
+  content: string;
+}
+
+export interface ConfigureConnectorInput {
+  projectId: string;
+  connectorId?: string;
+  name: string;
+  kind: Connector["kind"];
+  enabled: boolean;
+  config: Record<string, unknown>;
+  /** Written directly to the encrypted vault and never persisted in connector config. */
+  credential?: string | null;
+}
+
+export interface ConnectorGrantInput {
+  connectorId: string;
+  capability: ConnectorGrant["capability"];
+  scope?: Record<string, unknown>;
+  expiresAt?: string | null;
+}
+
+export interface GlobalSearchResult {
+  id: string;
+  projectId: string;
+  type: "conversation" | "message" | "artifact" | "memory" | "source";
+  title: string;
+  excerpt: string;
+  sessionId: string | null;
+  score: number;
+  updatedAt: string;
+}
+
+export interface SteerJobInput {
+  jobId: string;
+  action: "pause" | "resume" | "cancel" | "prioritize";
+  message?: string;
 }
 
 export interface StructuredQuestionAnswer {
@@ -302,6 +437,40 @@ export interface MaestroDesktopApi {
   updateConversation(input: UpdateConversationInput): Promise<Conversation>;
   deleteConversation(conversationId: string): Promise<void>;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
+  getSessionTimeline(
+    sessionId: string,
+    cursor?: number,
+    limit?: number,
+    branchId?: string,
+  ): Promise<SessionTimelinePage>;
+  sendTurn(input: SendTurnInput): Promise<SendMessageResult>;
+  editTurn(input: EditTurnInput): Promise<SendMessageResult>;
+  retryTurn(input: RetryTurnInput): Promise<SendMessageResult>;
+  forkAtTurn(input: ForkAtTurnInput): Promise<SessionBranch>;
+  switchBranch(sessionId: string, branchId: string): Promise<SessionTimelinePage>;
+  listArtifacts(projectId: string, sessionId?: string): Promise<Artifact[]>;
+  openArtifact(artifactId: string): Promise<ArtifactDetail>;
+  createArtifact(input: CreateArtifactInput): Promise<ArtifactDetail>;
+  updateArtifact(input: UpdateArtifactInput): Promise<ArtifactDetail>;
+  exportArtifact(artifactId: string, version?: number): Promise<string | null>;
+  listMemories(filter: MemoryFilter): Promise<MemoryRecord[]>;
+  saveMemory(input: SaveMemoryInput): Promise<MemoryRecord>;
+  acceptMemory(memoryId: string): Promise<MemoryRecord>;
+  updateMemory(input: UpdateMemoryInput): Promise<MemoryRecord>;
+  forgetMemory(memoryId: string): Promise<MemoryRecord>;
+  listConnectors(projectId: string): Promise<Connector[]>;
+  configureConnector(input: ConfigureConnectorInput): Promise<Connector>;
+  listConnectorGrants(connectorId: string): Promise<ConnectorGrant[]>;
+  grantConnector(input: ConnectorGrantInput): Promise<ConnectorGrant>;
+  revokeConnector(connectorId: string, grantId: string): Promise<ConnectorGrant>;
+  listConnectorInvocations(connectorId: string): Promise<ConnectorInvocation[]>;
+  setProjectAutonomy(projectId: string, level: AutonomyLevel): Promise<AutonomyProfile>;
+  getProjectAutonomy(projectId: string): Promise<AutonomyProfile>;
+  listJobs(projectId: string, activeOnly?: boolean): Promise<BackgroundJob[]>;
+  getJob(jobId: string): Promise<BackgroundJob>;
+  steerJob(input: SteerJobInput): Promise<BackgroundJob>;
+  globalSearch(projectId: string, query: string, limit?: number): Promise<GlobalSearchResult[]>;
+  openExternalUrl(url: string): Promise<void>;
   getRun(runId: string): Promise<RunDetail>;
   getRunEvents(runId: string, afterSequence?: number, limit?: number): Promise<EventPage>;
   approveRun(runId: string, planVersion: number): Promise<RunDetail>;

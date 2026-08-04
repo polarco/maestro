@@ -1,5 +1,11 @@
 import type {
   AppSettings,
+  ArtifactKind,
+  AutonomyLevel,
+  Connector,
+  ConnectorGrant,
+  ConnectorInvocation,
+  MemoryRecord,
   Attachment,
   ContextCheckpoint,
   ContextAssetChangeState,
@@ -75,6 +81,7 @@ export const conversations = sqliteTable(
       onDelete: "set null",
     }),
     providerSessionId: text("provider_session_id"),
+    activeBranchId: text("active_branch_id"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -94,6 +101,7 @@ export const messages = sqliteTable(
     status: text("status", { enum: ["pending", "streaming", "completed", "failed"] }).notNull(),
     attachments: text("attachments", { mode: "json" }).$type<Attachment[]>().notNull(),
     providerMessageId: text("provider_message_id"),
+    branchId: text("branch_id"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -219,6 +227,7 @@ export const runs = sqliteTable(
     updatedAt: text("updated_at").notNull(),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),
+    branchId: text("branch_id"),
   },
   (table) => [
     index("runs_project_state_idx").on(table.projectId, table.state),
@@ -296,6 +305,7 @@ export const runEvents = sqliteTable(
     sequence: integer("sequence").notNull(),
     type: text("type").notNull(),
     payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    schemaVersion: integer("schema_version").notNull(),
     occurredAt: text("occurred_at").notNull(),
   },
   (table) => [
@@ -338,6 +348,7 @@ export const turns = sqliteTable(
     updatedAt: text("updated_at").notNull(),
     completedAt: text("completed_at"),
     error: text("error"),
+    branchId: text("branch_id"),
   },
   (table) => [
     uniqueIndex("turns_conversation_sequence_uidx").on(table.conversationId, table.sequence),
@@ -538,6 +549,250 @@ export const modelTelemetry = sqliteTable(
   (table) => [index("model_telemetry_provider_model_idx").on(table.providerId, table.modelId)],
 );
 
+export const sessionBranches = sqliteTable(
+  "session_branches",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    parentBranchId: text("parent_branch_id"),
+    forkedFromTurnId: text("forked_from_turn_id").references(() => turns.id, {
+      onDelete: "set null",
+    }),
+    name: text("name").notNull(),
+    isRoot: integer("is_root", { mode: "boolean" }).notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("session_branches_session_idx").on(table.sessionId, table.createdAt),
+    index("session_branches_parent_idx").on(table.parentBranchId),
+  ],
+);
+
+export const artifacts = sqliteTable(
+  "artifacts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => conversations.id, { onDelete: "cascade" }),
+    branchId: text("branch_id"),
+    turnId: text("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    kind: text("kind").$type<ArtifactKind>().notNull(),
+    language: text("language"),
+    mimeType: text("mime_type").notNull(),
+    currentVersion: integer("current_version").notNull(),
+    pinned: integer("pinned", { mode: "boolean" }).notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("artifacts_project_updated_idx").on(table.projectId, table.updatedAt),
+    index("artifacts_session_updated_idx").on(table.sessionId, table.updatedAt),
+  ],
+);
+
+export const artifactVersions = sqliteTable(
+  "artifact_versions",
+  {
+    id: text("id").primaryKey(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    content: text("content").notNull(),
+    contentHash: text("content_hash").notNull(),
+    createdBy: text("created_by", { enum: ["user", "assistant", "tool"] }).notNull(),
+    sourceEventId: text("source_event_id"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("artifact_versions_artifact_version_uidx").on(table.artifactId, table.version),
+  ],
+);
+
+export const sourceSnapshots = sqliteTable(
+  "source_snapshots",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    title: text("title").notNull(),
+    excerpt: text("excerpt").notNull(),
+    contentHash: text("content_hash").notNull(),
+    accessedAt: text("accessed_at").notNull(),
+    provider: text("provider").notNull(),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  },
+  (table) => [index("source_snapshots_project_accessed_idx").on(table.projectId, table.accessedAt)],
+);
+
+export const citations = sqliteTable(
+  "citations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    branchId: text("branch_id"),
+    turnId: text("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "set null" }),
+    sourceSnapshotId: text("source_snapshot_id")
+      .notNull()
+      .references(() => sourceSnapshots.id, { onDelete: "cascade" }),
+    responseStart: integer("response_start"),
+    responseEnd: integer("response_end"),
+    quote: text("quote"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("citations_session_message_idx").on(table.sessionId, table.messageId)],
+);
+
+export const memoryRecords = sqliteTable(
+  "memory_records",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    scope: text("scope", { enum: ["project", "personal"] }).notNull(),
+    kind: text("kind", {
+      enum: ["preference", "decision", "fact", "constraint", "instruction"],
+    }).notNull(),
+    content: text("content").notNull(),
+    provenance: text("provenance", { mode: "json" }).$type<MemoryRecord["provenance"]>().notNull(),
+    confidence: real("confidence").notNull(),
+    state: text("state", {
+      enum: ["suggested", "accepted", "rejected", "forgotten"],
+    }).notNull(),
+    expiresAt: text("expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("memory_records_project_state_idx").on(table.projectId, table.state)],
+);
+
+export const connectors = sqliteTable(
+  "connectors",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind").$type<Connector["kind"]>().notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull(),
+    config: text("config", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("connectors_project_idx").on(table.projectId, table.enabled)],
+);
+
+export const connectorGrants = sqliteTable(
+  "connector_grants",
+  {
+    id: text("id").primaryKey(),
+    connectorId: text("connector_id")
+      .notNull()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    capability: text("capability").$type<ConnectorGrant["capability"]>().notNull(),
+    scope: text("scope", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    granted: integer("granted", { mode: "boolean" }).notNull(),
+    expiresAt: text("expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("connector_grants_connector_idx").on(table.connectorId, table.granted)],
+);
+
+export const connectorInvocations = sqliteTable(
+  "connector_invocations",
+  {
+    id: text("id").primaryKey(),
+    connectorId: text("connector_id")
+      .notNull()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    turnId: text("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    operation: text("operation").notNull(),
+    mutability: text("mutability").$type<ConnectorInvocation["mutability"]>().notNull(),
+    status: text("status").$type<ConnectorInvocation["status"]>().notNull(),
+    inputSummary: text("input_summary").notNull(),
+    outputSummary: text("output_summary"),
+    error: text("error"),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [
+    index("connector_invocations_connector_started_idx").on(table.connectorId, table.startedAt),
+  ],
+);
+
+export const backgroundJobs = sqliteTable(
+  "background_jobs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => conversations.id, { onDelete: "cascade" }),
+    branchId: text("branch_id"),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    parentJobId: text("parent_job_id"),
+    title: text("title").notNull(),
+    kind: text("kind", { enum: ["run", "agent", "research", "connector", "indexing"] }).notNull(),
+    state: text("state", {
+      enum: ["queued", "running", "blocked", "completed", "failed", "canceled"],
+    }).notNull(),
+    progress: real("progress"),
+    costUsd: real("cost_usd").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    detail: text("detail", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (table) => [index("background_jobs_project_state_idx").on(table.projectId, table.state)],
+);
+
+export const autonomyProfiles = sqliteTable("autonomy_profiles", {
+  projectId: text("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  level: text("level").$type<AutonomyLevel>().notNull(),
+  allowedPaths: text("allowed_paths", { mode: "json" }).$type<string[]>().notNull(),
+  allowedTools: text("allowed_tools", { mode: "json" }).$type<string[]>().notNull(),
+  allowedCommands: text("allowed_commands", { mode: "json" }).$type<string[]>().notNull(),
+  network: text("network", { enum: ["denied", "web", "full"] }).notNull(),
+  maxCostUsd: real("max_cost_usd"),
+  maxTokens: integer("max_tokens"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const auditEvents = sqliteTable(
+  "audit_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "set null" }),
+    sessionId: text("session_id").references(() => conversations.id, { onDelete: "set null" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    type: text("type").notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    occurredAt: text("occurred_at").notNull(),
+  },
+  (table) => [index("audit_events_project_occurred_idx").on(table.projectId, table.occurredAt)],
+);
+
 export const appMetadata = sqliteTable("app_metadata", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -612,6 +867,18 @@ export const schema = {
   toolArtifacts,
   pendingModelSwitches,
   modelTelemetry,
+  sessionBranches,
+  artifacts,
+  artifactVersions,
+  sourceSnapshots,
+  citations,
+  memoryRecords,
+  connectors,
+  connectorGrants,
+  connectorInvocations,
+  backgroundJobs,
+  autonomyProfiles,
+  auditEvents,
   appMetadata,
   settings,
   providerConfigs,

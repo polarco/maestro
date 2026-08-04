@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import {
   Activity,
   Bot,
+  BrainCircuit,
   Check,
   ChevronDown,
   CircleAlert,
@@ -20,6 +21,7 @@ import {
   Link2,
   ListOrdered,
   LockKeyhole,
+  MemoryStick,
   Palette,
   Pencil,
   Plus,
@@ -1592,25 +1594,15 @@ function GeneralSettings({
           description="Escolha como novas conversas começam e limite o trabalho simultâneo no dispositivo."
         >
           <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <SettingLabel
-                htmlFor="settings-default-mode"
-                help="É o modo pré-selecionado ao criar uma conversa. Maestro planeja e coordena tarefas; Agente direto trabalha com um único agente; Chat simples apenas conversa."
-              >
-                Modo padrão de conversa
-              </SettingLabel>
-              <Select
-                id="settings-default-mode"
-                className="w-full"
-                value={settings.defaultMode}
-                onChange={(event) =>
-                  updateSetting("defaultMode", event.target.value as AppSettings["defaultMode"])
-                }
-              >
-                <option value="maestro">Maestro</option>
-                <option value="agent">Agente direto</option>
-                <option value="chat">Chat simples</option>
-              </Select>
+            <div className="rounded-[13px] border border-primary/18 bg-primary/[0.035] p-3.5">
+              <div className="flex items-center gap-2 text-[10.5px] font-semibold text-text">
+                <Sparkles size={13} className="text-primary-soft" /> Conversa adaptativa
+                <Badge tone="primary">Maestro Next</Badge>
+              </div>
+              <p className="mt-2 text-[9.5px] leading-4 text-text-faint">
+                Cada turno infere Responder, Pesquisar, Planejar ou Executar. O chip no composer
+                permite override quando você precisar.
+              </p>
             </div>
             <div>
               <SettingLabel
@@ -1783,6 +1775,26 @@ function GeneralSettings({
               checked={settings.autoUpdateEnabled}
               onCheckedChange={(autoUpdateEnabled) =>
                 updateSetting("autoUpdateEnabled", autoUpdateEnabled)
+              }
+            />
+            <SettingToggleRow
+              icon={MemoryStick}
+              title="Memória pessoal"
+              description="Permite sugerir preferências entre projetos; permanece desligada por padrão."
+              help="Quando ativada, sugestões pessoais continuam locais, mostram proveniência e só entram no contexto depois da sua aceitação. Memórias de projeto não dependem desta opção."
+              checked={settings.personalMemoryEnabled}
+              onCheckedChange={(personalMemoryEnabled) =>
+                updateSetting("personalMemoryEnabled", personalMemoryEnabled)
+              }
+            />
+            <SettingToggleRow
+              icon={BrainCircuit}
+              title="Busca semântica de memória"
+              description="Usa multilingual-e5-small somente quando o modelo já está disponível localmente."
+              help="Nunca baixa o modelo nem consulta a rede durante a busca. Se o índice semântico local não estiver disponível, o Maestro continua usando FTS5 lexical sem interromper a conversa."
+              checked={settings.semanticMemoryEnabled}
+              onCheckedChange={(semanticMemoryEnabled) =>
+                updateSetting("semanticMemoryEnabled", semanticMemoryEnabled)
               }
             />
           </div>

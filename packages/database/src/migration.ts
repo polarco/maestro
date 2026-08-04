@@ -414,3 +414,319 @@ CREATE TABLE pending_model_switches (
   requested_at TEXT NOT NULL
 );
 `;
+
+/** Maestro Next session graph and local-first Studio. Strictly additive. */
+export const MAESTRO_NEXT_MIGRATION = `
+ALTER TABLE conversations ADD COLUMN active_branch_id TEXT;
+ALTER TABLE messages ADD COLUMN branch_id TEXT;
+ALTER TABLE runs ADD COLUMN branch_id TEXT;
+ALTER TABLE turns ADD COLUMN branch_id TEXT;
+ALTER TABLE run_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE session_branches (
+  id TEXT PRIMARY KEY NOT NULL,
+  session_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  parent_branch_id TEXT,
+  forked_from_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  is_root INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX session_branches_session_idx ON session_branches(session_id, created_at);
+CREATE INDEX session_branches_parent_idx ON session_branches(parent_branch_id);
+CREATE UNIQUE INDEX session_branches_one_root_uidx
+  ON session_branches(session_id) WHERE is_root = 1;
+
+CREATE TRIGGER session_branches_create_root AFTER INSERT ON conversations BEGIN
+  INSERT INTO session_branches(
+    id, session_id, parent_branch_id, forked_from_turn_id, name, is_root, created_at, updated_at
+  ) VALUES ('root-' || new.id, new.id, NULL, NULL, 'Principal', 1, new.created_at, new.updated_at);
+  UPDATE conversations SET active_branch_id = 'root-' || new.id WHERE id = new.id;
+END;
+
+INSERT INTO session_branches(
+  id, session_id, parent_branch_id, forked_from_turn_id, name, is_root, created_at, updated_at
+)
+SELECT 'root-' || id, id, NULL, NULL, 'Principal', 1, created_at, updated_at
+FROM conversations;
+UPDATE conversations SET active_branch_id = 'root-' || id WHERE active_branch_id IS NULL;
+UPDATE messages SET branch_id = 'root-' || conversation_id WHERE branch_id IS NULL;
+UPDATE runs SET branch_id = 'root-' || conversation_id WHERE branch_id IS NULL;
+UPDATE turns SET branch_id = 'root-' || conversation_id WHERE branch_id IS NULL;
+
+CREATE INDEX messages_conversation_branch_created_idx
+  ON messages(conversation_id, branch_id, created_at);
+CREATE INDEX runs_conversation_branch_created_idx
+  ON runs(conversation_id, branch_id, created_at);
+CREATE INDEX turns_conversation_branch_sequence_idx
+  ON turns(conversation_id, branch_id, sequence);
+
+CREATE TABLE artifacts (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  branch_id TEXT,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  language TEXT,
+  mime_type TEXT NOT NULL,
+  current_version INTEGER NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX artifacts_project_updated_idx ON artifacts(project_id, updated_at);
+CREATE INDEX artifacts_session_updated_idx ON artifacts(session_id, updated_at);
+
+CREATE TABLE artifact_versions (
+  id TEXT PRIMARY KEY NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  source_event_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX artifact_versions_artifact_version_uidx
+  ON artifact_versions(artifact_id, version);
+
+CREATE TABLE source_snapshots (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  excerpt TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  accessed_at TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX source_snapshots_project_accessed_idx
+  ON source_snapshots(project_id, accessed_at);
+
+CREATE TABLE citations (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  branch_id TEXT,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  source_snapshot_id TEXT NOT NULL REFERENCES source_snapshots(id) ON DELETE CASCADE,
+  response_start INTEGER,
+  response_end INTEGER,
+  quote TEXT,
+  created_at TEXT NOT NULL,
+  CHECK(response_start IS NULL OR response_end IS NULL OR response_end >= response_start)
+);
+CREATE INDEX citations_session_message_idx ON citations(session_id, message_id);
+
+CREATE TABLE memory_records (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  provenance TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  state TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK(scope <> 'project' OR project_id IS NOT NULL),
+  CHECK(confidence >= 0 AND confidence <= 1)
+);
+CREATE INDEX memory_records_project_state_idx ON memory_records(project_id, state);
+
+CREATE TABLE connectors (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX connectors_project_idx ON connectors(project_id, enabled);
+
+CREATE TABLE connector_grants (
+  id TEXT PRIMARY KEY NOT NULL,
+  connector_id TEXT NOT NULL REFERENCES connectors(id) ON DELETE CASCADE,
+  capability TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '{}',
+  granted INTEGER NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX connector_grants_connector_idx ON connector_grants(connector_id, granted);
+
+CREATE TABLE connector_invocations (
+  id TEXT PRIMARY KEY NOT NULL,
+  connector_id TEXT NOT NULL REFERENCES connectors(id) ON DELETE CASCADE,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  operation TEXT NOT NULL,
+  mutability TEXT NOT NULL,
+  status TEXT NOT NULL,
+  input_summary TEXT NOT NULL,
+  output_summary TEXT,
+  error TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX connector_invocations_connector_started_idx
+  ON connector_invocations(connector_id, started_at);
+
+CREATE TABLE background_jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  branch_id TEXT,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  parent_job_id TEXT,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  progress REAL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX background_jobs_project_state_idx ON background_jobs(project_id, state);
+
+INSERT INTO background_jobs(
+  id, project_id, session_id, branch_id, run_id, parent_job_id, title, kind, state,
+  progress, cost_usd, input_tokens, output_tokens, detail, created_at, updated_at, finished_at
+)
+SELECT
+  'run-' || id, project_id, conversation_id, branch_id, id, NULL,
+  'Execução ' || substr(id, 1, 8), 'run',
+  CASE
+    WHEN state IN ('completed') THEN 'completed'
+    WHEN state IN ('failed') THEN 'failed'
+    WHEN state IN ('canceled') THEN 'canceled'
+    WHEN state IN ('awaiting_clarification', 'awaiting_approval') THEN 'blocked'
+    WHEN state IN ('queued') THEN 'queued'
+    ELSE 'running'
+  END,
+  CASE WHEN state = 'completed' THEN 1.0 ELSE NULL END,
+  0, 0, 0, '{}', created_at, updated_at, finished_at
+FROM runs;
+
+CREATE TABLE autonomy_profiles (
+  project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  level TEXT NOT NULL,
+  allowed_paths TEXT NOT NULL DEFAULT '[]',
+  allowed_tools TEXT NOT NULL DEFAULT '[]',
+  allowed_commands TEXT NOT NULL DEFAULT '[]',
+  network TEXT NOT NULL DEFAULT 'denied',
+  max_cost_usd REAL,
+  max_tokens INTEGER,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO autonomy_profiles(
+  project_id, level, allowed_paths, allowed_tools, allowed_commands, network,
+  max_cost_usd, max_tokens, updated_at
+)
+SELECT id, 'review', '[]', '[]', '[]', 'denied', NULL, NULL, updated_at FROM projects;
+
+CREATE TABLE audit_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  session_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX audit_events_project_occurred_idx ON audit_events(project_id, occurred_at);
+CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+
+CREATE VIRTUAL TABLE global_search_fts USING fts5(
+  entity_type UNINDEXED,
+  entity_id UNINDEXED,
+  project_id UNINDEXED,
+  session_id UNINDEXED,
+  title,
+  content,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+SELECT 'conversation', id, project_id, id, title, '' FROM conversations;
+INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+SELECT 'message', messages.id, conversations.project_id, messages.conversation_id,
+       conversations.title, messages.content
+FROM messages JOIN conversations ON conversations.id = messages.conversation_id;
+
+CREATE TRIGGER global_search_conversation_insert AFTER INSERT ON conversations BEGIN
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  VALUES ('conversation', new.id, new.project_id, new.id, new.title, '');
+END;
+CREATE TRIGGER global_search_conversation_update AFTER UPDATE OF title ON conversations BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'conversation' AND entity_id = old.id;
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  VALUES ('conversation', new.id, new.project_id, new.id, new.title, '');
+END;
+CREATE TRIGGER global_search_conversation_delete AFTER DELETE ON conversations BEGIN
+  DELETE FROM global_search_fts WHERE session_id = old.id;
+END;
+CREATE TRIGGER global_search_message_insert AFTER INSERT ON messages BEGIN
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  SELECT 'message', new.id, project_id, new.conversation_id, title, new.content
+  FROM conversations WHERE id = new.conversation_id;
+END;
+CREATE TRIGGER global_search_message_update AFTER UPDATE OF content ON messages BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'message' AND entity_id = old.id;
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  SELECT 'message', new.id, project_id, new.conversation_id, title, new.content
+  FROM conversations WHERE id = new.conversation_id;
+END;
+CREATE TRIGGER global_search_message_delete AFTER DELETE ON messages BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'message' AND entity_id = old.id;
+END;
+CREATE TRIGGER global_search_artifact_version_insert AFTER INSERT ON artifact_versions BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'artifact' AND entity_id = new.artifact_id;
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  SELECT 'artifact', artifacts.id, artifacts.project_id, artifacts.session_id,
+         artifacts.title, new.content
+  FROM artifacts WHERE artifacts.id = new.artifact_id;
+END;
+CREATE TRIGGER global_search_artifact_delete AFTER DELETE ON artifacts BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'artifact' AND entity_id = old.id;
+END;
+CREATE TRIGGER global_search_memory_insert AFTER INSERT ON memory_records BEGIN
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  VALUES ('memory', new.id, IFNULL(new.project_id, ''), NULL, new.kind, new.content);
+END;
+CREATE TRIGGER global_search_memory_update AFTER UPDATE OF content, state ON memory_records BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'memory' AND entity_id = old.id;
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  SELECT 'memory', new.id, IFNULL(new.project_id, ''), NULL, new.kind, new.content
+  WHERE new.state NOT IN ('forgotten', 'rejected');
+END;
+CREATE TRIGGER global_search_memory_delete AFTER DELETE ON memory_records BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'memory' AND entity_id = old.id;
+END;
+CREATE TRIGGER global_search_source_insert AFTER INSERT ON source_snapshots BEGIN
+  INSERT INTO global_search_fts(entity_type, entity_id, project_id, session_id, title, content)
+  VALUES ('source', new.id, new.project_id, NULL, new.title, new.excerpt);
+END;
+CREATE TRIGGER global_search_source_delete AFTER DELETE ON source_snapshots BEGIN
+  DELETE FROM global_search_fts WHERE entity_type = 'source' AND entity_id = old.id;
+END;
+`;

@@ -44,8 +44,8 @@ import { ConfirmDialog, Modal } from "@renderer/components/ui/modal";
 
 const modeDot: Record<RunMode, string> = {
   maestro: "bg-primary",
-  agent: "bg-info",
-  chat: "bg-success",
+  agent: "bg-primary",
+  chat: "bg-primary",
 };
 
 interface SidebarProps {
@@ -469,6 +469,13 @@ export function Sidebar({
             icon={<LayoutDashboard size={16} />}
             label="Visão geral"
             badge={bootstrap.activeRuns.length}
+            collapsed={collapsed}
+          />
+          <NavButton
+            view={{ type: "mission-control" }}
+            icon={<Activity size={16} />}
+            label="Mission Control"
+            badge={bootstrap.activeJobs?.length ?? bootstrap.activeRuns.length}
             collapsed={collapsed}
           />
           <button

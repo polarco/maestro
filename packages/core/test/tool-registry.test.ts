@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ExecutionPolicy, ToolCall, ToolResult } from "@maestro/contracts";
 import { describe, expect, it } from "vitest";
 import { assertStructuredCommandAllowed } from "../src/command-policy.js";
+import { MaestroError } from "../src/errors.js";
 import { executionPolicyHash } from "../src/turn-coordinator.js";
 import {
   PolicyToolExecutor,
@@ -30,6 +31,47 @@ describe("policy tool executor", () => {
   it("treats an empty tool allow-list as no tools", () => {
     const registry = createBuiltinToolRegistry();
     expect(registry.definitions(policy("/workspace", []))).toEqual([]);
+  });
+
+  it("exposes structured connector schemas and records grant denials without unknown effects", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "maestro-connector-tool-"));
+    const registry = createBuiltinToolRegistry({
+      mcp: () =>
+        Promise.reject(
+          new MaestroError("CONNECTOR_GRANT_DENIED", "Grant ausente.", { recoverable: true }),
+        ),
+    });
+    const connectorPolicy = policy(root, ["mcp.call"]);
+    connectorPolicy.network = "full";
+    connectorPolicy.externalMutations = true;
+    connectorPolicy.scopeHash = executionPolicyHash(connectorPolicy);
+    expect(registry.definitions(connectorPolicy)[0]).toMatchObject({
+      name: "mcp.call",
+      inputSchema: { required: ["connectorId", "name"] },
+    });
+    let recorded: ToolCall | null = null;
+    const executor = new PolicyToolExecutor({
+      registry,
+      persistence: {
+        createToolCall: (call) => {
+          recorded = call;
+          return Promise.resolve();
+        },
+        updateToolCall: (call) => {
+          recorded = call;
+          return Promise.resolve();
+        },
+      },
+    });
+
+    await expect(
+      executor.execute(
+        "mcp.call",
+        { connectorId: "connector-1", name: "mutate" },
+        { turnId: "turn-1", runId: "run-1", policy: connectorPolicy },
+      ),
+    ).rejects.toMatchObject({ code: "CONNECTOR_GRANT_DENIED" });
+    expect(recorded).toMatchObject({ status: "denied" });
   });
 
   it("returns a persisted idempotent result without repeating an effect", async () => {

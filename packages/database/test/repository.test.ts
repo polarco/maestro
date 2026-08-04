@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { access, mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
@@ -6,7 +6,13 @@ import type { ExecutionPolicy, PlanSpec, RunSpec, ToolCall, ToolResult } from "@
 import { describe, expect, it } from "vitest";
 import { createContextCheckpoint, executionPolicyHash, TurnCoordinator } from "@maestro/core";
 import { MaestroRepository } from "../src/repository.js";
-import { INITIAL_MIGRATION, MULTI_ACCOUNT_MIGRATION } from "../src/migration.js";
+import {
+  AGENT_RUNTIME_MIGRATION,
+  INITIAL_MIGRATION,
+  MAESTRO_NEXT_MIGRATION,
+  MULTI_ACCOUNT_MIGRATION,
+  MULTIMODAL_CONTEXT_MIGRATION,
+} from "../src/migration.js";
 
 async function repository(): Promise<MaestroRepository> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-"));
@@ -31,7 +37,9 @@ describe("MaestroRepository", () => {
     expect(columns.some((column) => column.name === "provider_connection_id")).toBe(true);
     expect(
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+    expect(db.migrationBackupPath).not.toBeNull();
+    await expect(access(db.migrationBackupPath!)).resolves.toBeUndefined();
     db.close();
   }, 30_000);
 
@@ -53,7 +61,7 @@ describe("MaestroRepository", () => {
     const db = new MaestroRepository(filename);
     expect(
       db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
     expect(
       db.sqlite
         .prepare(
@@ -61,6 +69,358 @@ describe("MaestroRepository", () => {
         )
         .all(),
     ).toEqual([{ name: "context_assets" }, { name: "context_chunks_fts" }]);
+    db.close();
+  }, 30_000);
+
+  it("migrates a populated v3 database and preserves its conversation graph", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-v3-"));
+    const filename = path.join(directory, "maestro.db");
+    const legacy = new BetterSqlite3(filename);
+    legacy.exec(INITIAL_MIGRATION);
+    legacy.exec(MULTI_ACCOUNT_MIGRATION);
+    legacy.exec(MULTIMODAL_CONTEXT_MIGRATION);
+    const timestamp = new Date().toISOString();
+    for (const version of [1, 2, 3])
+      legacy
+        .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+        .run(version, timestamp);
+    legacy
+      .prepare(
+        "INSERT INTO projects(id, name, created_at, updated_at, last_opened_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("project-v3", "V3", timestamp, timestamp, timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO workspace_roots(
+           id, project_id, path, canonical_path, display_name, writable, created_at
+         ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run("root-v3", "project-v3", directory, directory, "v3", timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO conversations(
+           id, project_id, title, mode, session_kind, workspace_root_id, created_at, updated_at
+         ) VALUES (?, ?, ?, 'chat', 'structured', ?, ?, ?)`,
+      )
+      .run("conversation-v3", "project-v3", "Histórico v3", "root-v3", timestamp, timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO messages(
+           id, conversation_id, role, content, status, attachments, created_at, updated_at
+         ) VALUES (?, ?, 'user', ?, 'completed', '[]', ?, ?)`,
+      )
+      .run("message-v3", "conversation-v3", "mensagem v3", timestamp, timestamp);
+    legacy.close();
+
+    const db = new MaestroRepository(filename);
+    expect(
+      db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+    expect((await db.listMessages("conversation-v3"))[0]).toMatchObject({
+      content: "mensagem v3",
+      branchId: "root-conversation-v3",
+    });
+    expect((await db.listSessionBranches("conversation-v3"))[0]).toMatchObject({
+      id: "root-conversation-v3",
+      isRoot: true,
+    });
+    expect(db.sqlite.prepare("PRAGMA integrity_check").pluck().get()).toBe("ok");
+    db.close();
+  }, 30_000);
+
+  it("rolls back an interrupted v5 migration and replays it without losing v4 data", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "maestro-db-v4-"));
+    const filename = path.join(directory, "maestro.db");
+    const legacy = new BetterSqlite3(filename);
+    legacy.exec(INITIAL_MIGRATION);
+    legacy.exec(MULTI_ACCOUNT_MIGRATION);
+    legacy.exec(MULTIMODAL_CONTEXT_MIGRATION);
+    legacy.exec(AGENT_RUNTIME_MIGRATION);
+    const timestamp = new Date().toISOString();
+    for (const version of [1, 2, 3, 4])
+      legacy
+        .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+        .run(version, timestamp);
+    legacy
+      .prepare(
+        "INSERT INTO projects(id, name, created_at, updated_at, last_opened_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("project-v4", "Legado", timestamp, timestamp, timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO workspace_roots(
+           id, project_id, path, canonical_path, display_name, writable, created_at
+         ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run("root-v4", "project-v4", directory, directory, "legado", timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO conversations(
+           id, project_id, title, mode, session_kind, workspace_root_id, created_at, updated_at
+         ) VALUES (?, ?, ?, 'maestro', 'structured', ?, ?, ?)`,
+      )
+      .run("conversation-v4", "project-v4", "Sessão preservada", "root-v4", timestamp, timestamp);
+    legacy
+      .prepare(
+        `INSERT INTO messages(
+           id, conversation_id, role, content, status, attachments, created_at, updated_at
+         ) VALUES (?, ?, 'user', ?, 'completed', '[]', ?, ?)`,
+      )
+      .run("message-v4", "conversation-v4", "conteúdo íntegro", timestamp, timestamp);
+
+    expect(() =>
+      legacy.transaction(() => {
+        legacy.exec(MAESTRO_NEXT_MIGRATION);
+        throw new Error("interrupção simulada");
+      })(),
+    ).toThrow("interrupção simulada");
+    expect(
+      (legacy.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(
+        (column) => column.name === "active_branch_id",
+      ),
+    ).toBe(false);
+    legacy.close();
+
+    let db = new MaestroRepository(filename);
+    expect((await db.listMessages("conversation-v4"))[0]?.content).toBe("conteúdo íntegro");
+    expect((await db.listSessionBranches("conversation-v4"))[0]).toMatchObject({
+      name: "Principal",
+      isRoot: true,
+    });
+    expect(db.sqlite.prepare("PRAGMA integrity_check").pluck().get()).toBe("ok");
+    db.close();
+
+    db = new MaestroRepository(filename);
+    expect(db.migrationBackupPath).toBeNull();
+    expect(
+      db.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
+    ).toHaveLength(5);
+    db.close();
+  }, 30_000);
+
+  it("persists branch isolation, Studio versions, memory, grants, jobs and global search", async () => {
+    const db = await repository();
+    const project = await db.createProject({
+      name: "Next",
+      path: "/workspace/next",
+      canonicalPath: "/workspace/next",
+      displayName: "next",
+    });
+    const root = project.roots[0]!;
+    const conversation = await db.createConversation({
+      projectId: project.id,
+      title: "Maestro Next",
+      mode: "maestro",
+      sessionKind: "structured",
+      workspaceRootId: root.id,
+    });
+    const user = await db.addMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "Neste projeto, prefiro sempre usar testes de integração.",
+    });
+    const assistant = await db.addMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "Entendido.",
+    });
+    const runSpec: RunSpec = {
+      id: "run-next",
+      mode: "maestro",
+      projectId: project.id,
+      conversationId: conversation.id,
+      workspaceRootIds: [root.id],
+      prompt: user.content,
+      contextAssetIds: [],
+      requestedModel: null,
+      roleModels: {},
+      permissions: {
+        readWorkspace: true,
+        writeWorkspace: false,
+        runCommands: false,
+        network: false,
+        allowedCommands: [],
+        deniedCommands: [],
+      },
+      budget: { maxTokens: null, maxCostUsd: null, maxDurationMinutes: 10, maxTurns: 4 },
+      concurrency: 1,
+      createdAt: new Date().toISOString(),
+    };
+    const run = await db.createRun(runSpec, "researching");
+    const turn = await new TurnCoordinator(db).start({
+      conversationId: conversation.id,
+      runId: run.id,
+      sequence: 1,
+      prompt: user.content,
+      readableRoots: [root.canonicalPath],
+      hasWorkspace: true,
+      inputMessageId: user.id,
+    });
+    await db.updateTurn(turn.id, { outputMessageId: assistant.id });
+    await db.appendEvent({
+      runId: run.id,
+      type: "research.started",
+      data: { topics: ["integração"], scope: "workspace-and-context" },
+    });
+
+    const branch = await db.forkAtTurn({ sessionId: conversation.id, turnId: turn.id });
+    await db.addMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "Alternativa B",
+    });
+    expect((await db.listMessages(conversation.id)).map((message) => message.content)).toContain(
+      "Alternativa B",
+    );
+    const rootBranch = (await db.listSessionBranches(conversation.id)).find((item) => item.isRoot)!;
+    await db.switchSessionBranch(conversation.id, rootBranch.id);
+    expect(
+      (await db.listMessages(conversation.id)).map((message) => message.content),
+    ).not.toContain("Alternativa B");
+    await db.switchSessionBranch(conversation.id, branch.id);
+
+    const created = await db.createArtifact({
+      projectId: project.id,
+      sessionId: conversation.id,
+      branchId: branch.id,
+      turnId: turn.id,
+      title: "Contrato da API",
+      kind: "markdown",
+      language: "markdown",
+      content: "# Contrato\n\nresultado vivo",
+      pinned: true,
+      createdBy: "assistant",
+    });
+    expect(created.artifact.pinned).toBe(true);
+    const updated = await db.updateArtifact({
+      artifactId: created.artifact.id,
+      content: "# Contrato v2\n\nresultado vivo e revisado",
+      pinned: true,
+      language: null,
+    });
+    expect(updated.versions.map((version) => version.version)).toEqual([2, 1]);
+    expect(updated.artifact.pinned).toBe(true);
+    expect(updated.artifact.language).toBeNull();
+
+    const suggested = await db.suggestMemoriesFromMessage(user);
+    expect(suggested[0]).toMatchObject({ state: "suggested", scope: "project" });
+    expect((await db.updateMemory({ memoryId: suggested[0]!.id, state: "accepted" })).state).toBe(
+      "accepted",
+    );
+    const personal = await db.suggestMemoriesFromMessage(user, turn.id, "personal");
+    expect(personal[0]).toMatchObject({ scope: "personal", projectId: null });
+    expect((await db.listMemories({ scope: "personal" })).map((memory) => memory.id)).toContain(
+      personal[0]!.id,
+    );
+    expect((await db.setProjectAutonomy(project.id, "observe")).level).toBe("observe");
+
+    const connector = await db.configureConnector({
+      projectId: project.id,
+      name: "GitHub",
+      kind: "github",
+      enabled: true,
+      config: { repository: "owner/repo", credentialRef: "vault:github" },
+    });
+    expect(
+      (await db.grantConnector({ connectorId: connector.id, capability: "read" })).granted,
+    ).toBe(true);
+    await expect(
+      db.configureConnector({
+        projectId: project.id,
+        name: "Inseguro",
+        kind: "github",
+        enabled: true,
+        config: { token: "não pode persistir" },
+      }),
+    ).rejects.toThrow("vault");
+    await expect(
+      db.configureConnector({
+        projectId: project.id,
+        name: "MCP inseguro",
+        kind: "mcp_stdio",
+        enabled: true,
+        config: { command: "node", env: { GITHUB_TOKEN: "também não pode persistir" } },
+      }),
+    ).rejects.toThrow("vault");
+
+    expect((await db.listJobs(project.id))[0]).toMatchObject({ runId: run.id });
+    expect(
+      (await db.globalSearch(project.id, "resultado vivo")).some(
+        (item) => item.type === "artifact",
+      ),
+    ).toBe(true);
+    const timeline = await db.getSessionTimeline(conversation.id, 0, 1_000, branch.id);
+    expect(timeline.items.some((item) => item.kind === "artifact")).toBe(true);
+    expect(timeline.items.some((item) => item.kind === "research")).toBe(true);
+    expect(db.sqlite.prepare("PRAGMA integrity_check").pluck().get()).toBe("ok");
+    await db.deleteConversation(conversation.id);
+    expect(
+      db.sqlite
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE session_id IS NOT NULL")
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(
+      db.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get("audit_events_no_update"),
+    ).toEqual({ name: "audit_events_no_update" });
+    expect(db.sqlite.prepare("PRAGMA integrity_check").pluck().get()).toBe("ok");
+    db.close();
+  });
+
+  it("pages a 10k-item timeline from the newest window without mounting the full history", async () => {
+    const db = await repository();
+    const project = await db.createProject({
+      name: "Escala",
+      path: "/workspace/scale",
+      canonicalPath: "/workspace/scale",
+      displayName: "scale",
+    });
+    const conversation = await db.createConversation({
+      projectId: project.id,
+      title: "Timeline longa",
+      mode: "maestro",
+      sessionKind: "structured",
+      workspaceRootId: project.roots[0]!.id,
+    });
+    const insert = db.sqlite.prepare(
+      `INSERT INTO messages(
+         id, conversation_id, role, content, status, attachments, branch_id, created_at, updated_at
+       ) VALUES (?, ?, 'user', ?, 'completed', '[]', ?, ?, ?)`,
+    );
+    const startedAt = Date.UTC(2026, 0, 1);
+    db.sqlite.transaction(() => {
+      for (let index = 0; index < 10_005; index += 1) {
+        const timestamp = new Date(startedAt + index).toISOString();
+        insert.run(
+          `message-scale-${index.toString().padStart(5, "0")}`,
+          conversation.id,
+          index === 10_004 ? "marcador final exclusivo" : `item ${index}`,
+          conversation.activeBranchId,
+          timestamp,
+          timestamp,
+        );
+      }
+    })();
+
+    const latest = await db.getSessionTimeline(conversation.id, undefined, 500);
+    expect(latest).toMatchObject({
+      cursor: 10_000,
+      total: 10_005,
+      previousCursor: 9_500,
+      nextCursor: null,
+    });
+    expect(latest.items).toHaveLength(5);
+    expect(latest.items.at(-1)).toMatchObject({
+      kind: "message",
+      message: { content: "marcador final exclusivo" },
+    });
+    const previous = await db.getSessionTimeline(conversation.id, latest.previousCursor!, 500);
+    expect(previous).toMatchObject({ cursor: 9_500, previousCursor: 9_000, nextCursor: 10_000 });
+    expect(previous.items).toHaveLength(500);
+    expect(await db.globalSearch(project.id, "marcador final")).toEqual([
+      expect.objectContaining({ type: "message", sessionId: conversation.id }),
+    ]);
     db.close();
   }, 30_000);
 

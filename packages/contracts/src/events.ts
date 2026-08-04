@@ -53,6 +53,11 @@ export type RunEventType =
   | "context.optimized"
   | "model.switch.pending"
   | "model.switch.applied"
+  | "source.accessed"
+  | "memory.changed"
+  | "connector.invoked"
+  | "authorization.changed"
+  | "artifact.updated"
   | "metric"
   | "log"
   | "error";
@@ -72,7 +77,10 @@ export interface EventDataMap {
   "discovery.completed": { round: number; discovery: MaestroDiscovery };
   "clarification.requested": { round: number; questions: MaestroQuestion[] };
   "clarification.answered": { round: number; answer: string; contextAssetIds: string[] };
-  "research.started": { topics: string[]; scope: "workspace-and-context" };
+  "research.started": {
+    topics: string[];
+    scope: "workspace-and-context" | "workspace-web-and-context";
+  };
   "research.finding": { finding: MaestroResearchFinding };
   "brief.created": { brief: MaestroBrief };
   "analysis.completed": { analysis: AnalysisResult };
@@ -85,7 +93,7 @@ export interface EventDataMap {
     checkpointId: string | null;
   };
   "plan.created": { plan: PlanSpec; markdown: string };
-  "plan.approved": { version: number; approvedBy: "user" };
+  "plan.approved": { version: number; approvedBy: "user" | "autopilot" };
   "plan.revision_requested": { version: number; comment: string };
   "agents.dispatched": {
     planVersion: number;
@@ -190,6 +198,34 @@ export interface EventDataMap {
     selection: ModelSelection;
     checkpointId: string | null;
   };
+  "source.accessed": {
+    sourceSnapshotId: string;
+    url: string;
+    provider: string;
+  };
+  "memory.changed": {
+    memoryId: string;
+    action: "suggested" | "accepted" | "updated" | "rejected" | "forgotten";
+    scope: "project" | "personal";
+  };
+  "connector.invoked": {
+    connectorId: string;
+    invocationId: string;
+    operation: string;
+    mutability: "read" | "workspace" | "external";
+    status: "pending" | "running" | "completed" | "failed" | "denied";
+  };
+  "authorization.changed": {
+    subject: "project_autonomy" | "connector_grant" | "approval";
+    subjectId: string;
+    action: "granted" | "revoked" | "updated";
+    summary: string;
+  };
+  "artifact.updated": {
+    artifactId: string;
+    version: number;
+    kind: "markdown" | "code" | "diff" | "json" | "html" | "svg";
+  };
   metric: {
     inputTokens?: number;
     outputTokens?: number;
@@ -206,6 +242,7 @@ export type RunEvent<K extends RunEventType = RunEventType> = K extends RunEvent
       id: string;
       runId: string;
       sequence: number;
+      schemaVersion: number;
       type: K;
       data: EventDataMap[K];
       occurredAt: string;
@@ -217,6 +254,7 @@ export type NewRunEvent<K extends RunEventType = RunEventType> = K extends RunEv
       runId: string;
       type: K;
       data: EventDataMap[K];
+      schemaVersion?: number;
       occurredAt?: string;
     }
   : never;

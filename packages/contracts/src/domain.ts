@@ -167,6 +167,8 @@ export const conversationSchema = z.object({
   modelId: z.string().min(1).nullable(),
   workspaceRootId: entityIdSchema.nullable(),
   providerSessionId: z.string().min(1).nullable(),
+  /** Active branch in the additive session graph. Missing on pre-v5 payloads. */
+  activeBranchId: entityIdSchema.nullable().optional(),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 });
@@ -182,10 +184,222 @@ export const messageSchema = z.object({
   attachments: z.array(attachmentSchema),
   contextAssets: z.array(contextAssetSummarySchema).default([]),
   providerMessageId: z.string().nullable(),
+  /** Branch ownership is additive; legacy messages are backfilled into the root branch. */
+  branchId: entityIdSchema.nullable().optional(),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 });
 export type Message = z.infer<typeof messageSchema>;
+
+export const sessionBranchSchema = z
+  .object({
+    id: entityIdSchema,
+    sessionId: entityIdSchema,
+    parentBranchId: entityIdSchema.nullable(),
+    forkedFromTurnId: entityIdSchema.nullable(),
+    name: z.string().min(1).max(120),
+    isRoot: z.boolean(),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict();
+export type SessionBranch = z.infer<typeof sessionBranchSchema>;
+
+export const artifactKindSchema = z.enum(["markdown", "code", "diff", "json", "html", "svg"]);
+export type ArtifactKind = z.infer<typeof artifactKindSchema>;
+
+export const artifactVersionSchema = z
+  .object({
+    id: entityIdSchema,
+    artifactId: entityIdSchema,
+    version: z.number().int().positive(),
+    content: z.string(),
+    contentHash: z.string().min(1),
+    createdBy: z.enum(["user", "assistant", "tool"]),
+    sourceEventId: entityIdSchema.nullable(),
+    createdAt: isoDateSchema,
+  })
+  .strict();
+export type ArtifactVersion = z.infer<typeof artifactVersionSchema>;
+
+export const artifactSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema,
+    sessionId: entityIdSchema.nullable(),
+    branchId: entityIdSchema.nullable(),
+    turnId: entityIdSchema.nullable(),
+    title: z.string().min(1).max(240),
+    kind: artifactKindSchema,
+    language: z.string().max(80).nullable(),
+    mimeType: z.string().min(1).max(200),
+    currentVersion: z.number().int().positive(),
+    pinned: z.boolean(),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict();
+export type Artifact = z.infer<typeof artifactSchema>;
+
+export const sourceSnapshotSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema,
+    url: z.string().url().max(8_192),
+    title: z.string().min(1).max(500),
+    excerpt: z.string().max(20_000),
+    contentHash: z.string().min(1),
+    accessedAt: isoDateSchema,
+    provider: z.string().min(1).max(120),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
+export type SourceSnapshot = z.infer<typeof sourceSnapshotSchema>;
+
+export const citationSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema,
+    sessionId: entityIdSchema,
+    branchId: entityIdSchema.nullable(),
+    turnId: entityIdSchema.nullable(),
+    messageId: entityIdSchema.nullable(),
+    sourceSnapshotId: entityIdSchema,
+    responseStart: z.number().int().nonnegative().nullable(),
+    responseEnd: z.number().int().nonnegative().nullable(),
+    quote: z.string().max(2_000).nullable(),
+    createdAt: isoDateSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.responseStart === null ||
+      value.responseEnd === null ||
+      value.responseEnd >= value.responseStart,
+    { message: "O intervalo da citação é inválido." },
+  );
+export type Citation = z.infer<typeof citationSchema>;
+
+export const memoryScopeSchema = z.enum(["project", "personal"]);
+export type MemoryScope = z.infer<typeof memoryScopeSchema>;
+
+export const memoryStateSchema = z.enum(["suggested", "accepted", "rejected", "forgotten"]);
+export type MemoryState = z.infer<typeof memoryStateSchema>;
+
+export const memoryRecordSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema.nullable(),
+    scope: memoryScopeSchema,
+    kind: z.enum(["preference", "decision", "fact", "constraint", "instruction"]),
+    content: z.string().min(1).max(20_000),
+    provenance: z
+      .object({
+        sessionId: entityIdSchema.nullable(),
+        turnId: entityIdSchema.nullable(),
+        messageId: entityIdSchema.nullable(),
+        source: z.enum(["user", "assistant", "import", "system"]),
+        excerpt: z.string().max(2_000).nullable(),
+      })
+      .strict(),
+    confidence: z.number().min(0).max(1),
+    state: memoryStateSchema,
+    expiresAt: isoDateSchema.nullable(),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict()
+  .refine((value) => value.scope !== "project" || value.projectId !== null, {
+    message: "Memórias de projeto precisam de um projeto.",
+  });
+export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
+
+export const connectorSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema,
+    name: z.string().min(1).max(120),
+    kind: z.enum(["mcp_stdio", "mcp_http", "github", "brave_search"]),
+    enabled: z.boolean(),
+    config: z.record(z.string(), z.unknown()).default({}),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict();
+export type Connector = z.infer<typeof connectorSchema>;
+
+export const connectorGrantSchema = z
+  .object({
+    id: entityIdSchema,
+    connectorId: entityIdSchema,
+    capability: z.enum(["read", "write", "network", "external_mutation"]),
+    scope: z.record(z.string(), z.unknown()).default({}),
+    granted: z.boolean(),
+    expiresAt: isoDateSchema.nullable(),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+  })
+  .strict();
+export type ConnectorGrant = z.infer<typeof connectorGrantSchema>;
+
+export const connectorInvocationSchema = z
+  .object({
+    id: entityIdSchema,
+    connectorId: entityIdSchema,
+    runId: entityIdSchema.nullable(),
+    turnId: entityIdSchema.nullable(),
+    operation: z.string().min(1).max(240),
+    mutability: z.enum(["read", "workspace", "external"]),
+    status: z.enum(["pending", "running", "completed", "failed", "denied"]),
+    inputSummary: z.string().max(4_000),
+    outputSummary: z.string().max(20_000).nullable(),
+    error: z.string().max(20_000).nullable(),
+    startedAt: isoDateSchema,
+    finishedAt: isoDateSchema.nullable(),
+  })
+  .strict();
+export type ConnectorInvocation = z.infer<typeof connectorInvocationSchema>;
+
+export const autonomyLevelSchema = z.enum(["observe", "review", "autopilot"]);
+export type AutonomyLevel = z.infer<typeof autonomyLevelSchema>;
+
+export const autonomyProfileSchema = z
+  .object({
+    projectId: entityIdSchema,
+    level: autonomyLevelSchema,
+    allowedPaths: z.array(z.string().min(1)).default([]),
+    allowedTools: z.array(z.string().min(1)).default([]),
+    allowedCommands: z.array(z.string().min(1)).default([]),
+    network: z.enum(["denied", "web", "full"]).default("denied"),
+    maxCostUsd: z.number().nonnegative().nullable().default(null),
+    maxTokens: z.number().int().positive().nullable().default(null),
+    updatedAt: isoDateSchema,
+  })
+  .strict();
+export type AutonomyProfile = z.infer<typeof autonomyProfileSchema>;
+
+export const backgroundJobSchema = z
+  .object({
+    id: entityIdSchema,
+    projectId: entityIdSchema,
+    sessionId: entityIdSchema.nullable(),
+    branchId: entityIdSchema.nullable(),
+    runId: entityIdSchema.nullable(),
+    parentJobId: entityIdSchema.nullable(),
+    title: z.string().min(1).max(240),
+    kind: z.enum(["run", "agent", "research", "connector", "indexing"]),
+    state: z.enum(["queued", "running", "blocked", "completed", "failed", "canceled"]),
+    progress: z.number().min(0).max(1).nullable(),
+    costUsd: z.number().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    detail: z.record(z.string(), z.unknown()).default({}),
+    createdAt: isoDateSchema,
+    updatedAt: isoDateSchema,
+    finishedAt: isoDateSchema.nullable(),
+  })
+  .strict();
+export type BackgroundJob = z.infer<typeof backgroundJobSchema>;
 
 export const modelSelectionSchema = z.object({
   providerId: z.string().min(1),
@@ -394,6 +608,7 @@ export const turnSchema = z
     selectedModel: modelSelectionSchema.nullable(),
     inputMessageId: entityIdSchema.nullable(),
     outputMessageId: entityIdSchema.nullable(),
+    branchId: entityIdSchema.nullable().optional(),
     createdAt: isoDateSchema,
     updatedAt: isoDateSchema,
     completedAt: isoDateSchema.nullable(),
@@ -423,6 +638,110 @@ export const turnItemSchema = z
   })
   .strict();
 export type TurnItem = z.infer<typeof turnItemSchema>;
+
+const timelineBase = {
+  id: entityIdSchema,
+  sessionId: entityIdSchema,
+  branchId: entityIdSchema.nullable(),
+  turnId: entityIdSchema.nullable(),
+  runId: entityIdSchema.nullable(),
+  sequence: z.number().int().nonnegative(),
+  createdAt: isoDateSchema,
+};
+
+/** Renderer-facing, stable visual protocol. Messages and run events remain authoritative. */
+export const timelineItemSchema = z.discriminatedUnion("kind", [
+  z.object({ ...timelineBase, kind: z.literal("message"), message: messageSchema }).strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("question"),
+      questions: z.array(z.lazy(() => maestroQuestionSchema)),
+      status: z.enum(["pending", "answered"]),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("research"),
+      title: z.string(),
+      summary: z.string(),
+      status: z.enum(["running", "completed", "failed"]),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("source"),
+      source: sourceSnapshotSchema,
+      citation: citationSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({ ...timelineBase, kind: z.literal("plan"), plan: z.lazy(() => planSpecSchema) })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("agent"),
+      agentId: entityIdSchema,
+      label: z.string(),
+      status: z.enum(["queued", "running", "completed", "failed", "canceled"]),
+      detail: z.string().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("tool"),
+      name: z.string(),
+      status: z.enum(["pending", "running", "completed", "failed", "denied"]),
+      summary: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("approval"),
+      approvalId: entityIdSchema,
+      status: z.enum(["pending", "approved", "denied", "superseded"]),
+      summary: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("diff"),
+      path: z.string(),
+      patch: z.string(),
+      additions: z.number().int().nonnegative().nullable(),
+      deletions: z.number().int().nonnegative().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("validation"),
+      label: z.string(),
+      status: z.enum(["running", "passed", "failed"]),
+      detail: z.string().nullable(),
+    })
+    .strict(),
+  z.object({ ...timelineBase, kind: z.literal("artifact"), artifact: artifactSchema }).strict(),
+  z
+    .object({ ...timelineBase, kind: z.literal("checkpoint"), checkpoint: contextCheckpointSchema })
+    .strict(),
+  z
+    .object({
+      ...timelineBase,
+      kind: z.literal("error"),
+      code: z.string(),
+      message: z.string(),
+      recoverable: z.boolean(),
+    })
+    .strict(),
+]);
+export type TimelineItem = z.infer<typeof timelineItemSchema>;
 
 export const budgetSpecSchema = z.object({
   maxTokens: z.number().int().positive().nullable().default(null),
@@ -572,6 +891,7 @@ export const runSpecSchema = z.object({
   budget: budgetSpecSchema,
   concurrency: z.number().int().positive().max(16).default(4),
   createdAt: isoDateSchema,
+  branchId: entityIdSchema.nullable().optional(),
 });
 export type RunSpec = z.infer<typeof runSpecSchema>;
 
@@ -590,6 +910,7 @@ export const runSchema = z.object({
   updatedAt: isoDateSchema,
   startedAt: isoDateSchema.nullable(),
   finishedAt: isoDateSchema.nullable(),
+  branchId: entityIdSchema.nullable().optional(),
 });
 export type Run = z.infer<typeof runSchema>;
 
@@ -631,6 +952,8 @@ const appSettingsFields = {
   defaultRoutingProfile: routingProfileSchema,
   modelPins: z.record(z.string(), modelSelectionSchema),
   noFallback: z.boolean(),
+  personalMemoryEnabled: z.boolean(),
+  semanticMemoryEnabled: z.boolean(),
   defaultModels: z.record(z.string(), modelSelectionSchema),
 };
 
@@ -647,6 +970,8 @@ export const appSettingsSchema = z.object({
   defaultRoutingProfile: appSettingsFields.defaultRoutingProfile.default("economical"),
   modelPins: appSettingsFields.modelPins.default({}),
   noFallback: appSettingsFields.noFallback.default(false),
+  personalMemoryEnabled: appSettingsFields.personalMemoryEnabled.default(false),
+  semanticMemoryEnabled: appSettingsFields.semanticMemoryEnabled.default(false),
   defaultModels: appSettingsFields.defaultModels.default({}),
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -666,6 +991,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultRoutingProfile: "economical",
   modelPins: {},
   noFallback: false,
+  personalMemoryEnabled: false,
+  semanticMemoryEnabled: false,
   defaultModels: {
     maestro: { providerId: "anthropic", modelId: "claude-fable-5", effort: "high" },
     analyst: { providerId: "anthropic", modelId: "claude-fable-5", effort: "medium" },

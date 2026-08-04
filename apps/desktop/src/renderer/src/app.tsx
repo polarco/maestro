@@ -17,6 +17,7 @@ import { Onboarding } from "@renderer/pages/onboarding";
 import { RunPage } from "@renderer/pages/run";
 import { SettingsPage } from "@renderer/pages/settings";
 import { TerminalPage } from "@renderer/pages/terminal";
+import { MissionControlPage } from "@renderer/pages/mission-control";
 import { applyTheme, storeTheme } from "@renderer/lib/theme";
 
 function usable(provider: ProviderSummary, mode: RunMode): boolean {
@@ -112,7 +113,7 @@ export default function App() {
       const root = project?.roots[0];
       if (!project || !root)
         throw new Error("Adicione uma pasta autorizada ao projeto antes de iniciar uma conversa.");
-      const mode = bootstrap.settings.defaultMode;
+      const mode: RunMode = "maestro";
       const provider = preferredProvider(bootstrap, mode);
       const requested =
         bootstrap.settings.defaultModels[
@@ -254,6 +255,9 @@ export default function App() {
       break;
     case "history":
       content = <HistoryPage project={project} />;
+      break;
+    case "mission-control":
+      content = <MissionControlPage project={project} />;
       break;
     case "settings":
       content = <SettingsPage bootstrap={bootstrap} project={project} onBootstrap={setBootstrap} />;

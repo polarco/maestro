@@ -50,7 +50,10 @@ export interface BuiltinToolServices {
   question?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
   agent?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
   skill?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
+  mcpRead?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
   mcp?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
+  githubRead?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
+  githubMutate?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
   web?: (input: unknown, context: ToolExecutionContext) => Promise<unknown>;
 }
 
@@ -285,7 +288,12 @@ export class PolicyToolExecutor {
       await this.#persistence.saveToolResult?.(result);
       return { call, result };
     } catch (error) {
-      call.status = tool.definition.mutability === "read" ? "failed" : "unknown_effect";
+      call.status =
+        error instanceof MaestroError && error.code === "CONNECTOR_GRANT_DENIED"
+          ? "denied"
+          : tool.definition.mutability === "read"
+            ? "failed"
+            : "unknown_effect";
       call.finishedAt = new Date().toISOString();
       await this.#persistence.updateToolCall?.(call);
       const result: ToolResult = {
@@ -431,6 +439,7 @@ export function createBuiltinToolRegistry(services: BuiltinToolServices = {}): T
     mutability: ToolDefinition["mutability"],
     handler: ((input: unknown, context: ToolExecutionContext) => Promise<unknown>) | undefined,
     requiresApproval = false,
+    inputSchema: Record<string, unknown> = schema({}),
   ) => {
     registry.register(
       {
@@ -439,7 +448,7 @@ export function createBuiltinToolRegistry(services: BuiltinToolServices = {}): T
         description: `${title} por um executor estruturado do Maestro.`,
         category,
         mutability,
-        inputSchema: schema({}),
+        inputSchema,
         outputSchema: null,
         requiresApproval,
         idempotent: mutability === "read",
@@ -601,7 +610,71 @@ export function createBuiltinToolRegistry(services: BuiltinToolServices = {}): T
   delegated("question.ask", "Perguntar ao usuário", "question", "read", services.question);
   delegated("agent.task", "Delegar tarefa", "agent", "read", services.agent);
   delegated("skill.invoke", "Invocar skill", "skill", "read", services.skill);
-  delegated("mcp.call", "Chamar MCP", "mcp", "external", services.mcp, true);
+  delegated(
+    "mcp.read",
+    "Ler recurso MCP",
+    "mcp",
+    "read",
+    services.mcpRead,
+    false,
+    schema(
+      {
+        connectorId: { type: "string" },
+        operation: { type: "string", enum: ["list_tools", "list_resources", "read_resource"] },
+        uri: { type: "string" },
+      },
+      ["connectorId", "operation"],
+    ),
+  );
+  delegated(
+    "mcp.call",
+    "Chamar ferramenta MCP",
+    "mcp",
+    "external",
+    services.mcp,
+    true,
+    schema(
+      {
+        connectorId: { type: "string" },
+        name: { type: "string" },
+        arguments: { type: "object", additionalProperties: true },
+      },
+      ["connectorId", "name"],
+    ),
+  );
+  delegated(
+    "github.read",
+    "Consultar GitHub",
+    "web",
+    "read",
+    services.githubRead,
+    false,
+    schema(
+      {
+        connectorId: { type: "string" },
+        path: { type: "string" },
+        query: { type: "object", additionalProperties: true },
+      },
+      ["connectorId", "path"],
+    ),
+  );
+  delegated(
+    "github.mutate",
+    "Alterar dados no GitHub",
+    "web",
+    "external",
+    services.githubMutate,
+    true,
+    schema(
+      {
+        connectorId: { type: "string" },
+        method: { type: "string", enum: ["POST", "PUT", "PATCH", "DELETE"] },
+        path: { type: "string" },
+        body: { type: "object", additionalProperties: true },
+      },
+      ["connectorId", "method", "path"],
+    ),
+  );
   delegated("web.access", "Acessar web", "web", "external", services.web, true);
   return registry;
 }

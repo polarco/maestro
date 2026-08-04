@@ -54,6 +54,24 @@ describe("ProcessSupervisor", () => {
     expect(Buffer.byteLength(result.stdout)).toBe(128);
   });
 
+  it("tracks and closes transport-owned resources", async () => {
+    const value = supervisor();
+    let closed = false;
+    value.trackResource({
+      label: "MCP fixture",
+      pid: 123,
+      close: () => {
+        closed = true;
+        return Promise.resolve();
+      },
+    });
+
+    expect(value.list()).toEqual([expect.objectContaining({ label: "MCP fixture", pid: 123 })]);
+    await value.killAll();
+    expect(closed).toBe(true);
+    expect(value.list()).toEqual([]);
+  });
+
   it("waits for direct child stdout to close before resolving", async () => {
     const payloadSize = 2 * 1024 * 1024;
     const marker = "complete-output";

@@ -161,27 +161,36 @@ async function startApiFixture(): Promise<{ server: Server; url: string }> {
 async function waitForRun(
   page: Page,
   state: "awaiting_clarification" | "awaiting_approval" | "completed",
+  runId?: string,
 ): Promise<string> {
-  return page.evaluate(async (target) => {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      const bootstrap = await window.maestro.bootstrap();
-      const conversation = bootstrap.recentConversations[0];
-      if (conversation) {
-        const detail = await window.maestro.getConversation(conversation.id);
-        const run = detail.runs[0];
-        if (run?.state === target) return run.id;
-        if (run?.state === "failed") throw new Error(run.error ?? "Run failed");
+  return page.evaluate(
+    async ({ target, expectedRunId }) => {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        if (expectedRunId) {
+          const detail = await window.maestro.getRun(expectedRunId);
+          if (detail.run.state === target) return detail.run.id;
+          if (detail.run.state === "failed") throw new Error(detail.run.error ?? "Run failed");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
+        const bootstrap = await window.maestro.bootstrap();
+        for (const conversation of bootstrap.recentConversations) {
+          const detail = await window.maestro.getConversation(conversation.id);
+          const run = detail.runs.find((candidate) => candidate.state === target);
+          if (run) return run.id;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error(`Run did not reach ${target}`);
-  }, state);
+      throw new Error(`Run did not reach ${target}`);
+    },
+    { target: state, expectedRunId: runId },
+  );
 }
 
 // Playwright requires the first callback argument to be an object destructuring pattern.
 // eslint-disable-next-line no-empty-pattern
-test("Maestro, agente, chat e terminal funcionam no Electron isolado", async ({}, testInfo) => {
+test("conversa adaptativa, Studio, Mission Control e terminal funcionam no Electron isolado", async ({}, testInfo) => {
   test.skip(
     process.platform === "win32",
     "A fixture de CLI deste teste é POSIX; Windows possui smoke próprio no CI.",
@@ -374,7 +383,9 @@ else if (command[0] === "exec") {
     expect(await readFile(sentinel, "utf8")).toBe("do not change\n");
 
     await page.getByRole("button", { name: "Nova conversa" }).first().click();
-    const maestroComposer = page.getByPlaceholder("Descreva o resultado que você quer…");
+    const maestroComposer = page.getByPlaceholder(
+      "Descreva a intenção; o Maestro decide como ajudar…",
+    );
     await page.getByRole("button", { name: /Investigue e corrija os testes que falham/ }).click();
     await expect(maestroComposer).toHaveText("Investigue e corrija os testes que falham");
     await expect(maestroComposer).toBeFocused();
@@ -383,33 +394,29 @@ else if (command[0] === "exec") {
     const runId = await waitForRun(page, "awaiting_clarification");
     await expect(page.getByText("Preciso alinhar com você")).toBeVisible();
     await expect(
-      page.getByText("Qual deve ser a entrega real deste cenário?", { exact: true }).first(),
+      page.getByText(/Qual deve ser a entrega real deste cenário\?/).first(),
     ).toBeVisible();
     await page.getByRole("button", { name: "Mudança no produto existente", exact: true }).click();
     await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
-    await expect(
-      page.getByText("Onde o acompanhamento deve aparecer?", { exact: true }).first(),
-    ).toBeVisible();
+    await expect(page.getByText(/Onde o acompanhamento deve aparecer\?/).first()).toBeVisible();
     await page.getByRole("button", { name: "Na conversa principal", exact: true }).click();
     await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     await expect(
-      page
-        .getByText("O histórico dos agentes deve sobreviver ao reinício?", { exact: true })
-        .first(),
+      page.getByText(/O histórico dos agentes deve sobreviver ao reinício\?/).first(),
     ).toBeVisible();
     await page.getByRole("button", { name: "Persistir após reiniciar", exact: true }).click();
     await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
     await expect(
-      page.getByText("Quando os agentes podem começar a editar?", { exact: true }).first(),
+      page.getByText(/Quando os agentes podem começar a editar\?/).first(),
     ).toBeVisible();
     await expect(page.getByText("Rodada 4 · conforme necessário", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Somente após aprovação", exact: true }).click();
     await page.getByRole("button", { name: "Enviar respostas e continuar" }).click();
 
-    expect(await waitForRun(page, "awaiting_approval")).toBe(runId);
+    expect(await waitForRun(page, "awaiting_approval", runId)).toBe(runId);
     await expect(page.getByText("Workspace estudado").first()).toBeVisible();
     await expect(page.getByText("Brief consolidado").first()).toBeVisible();
     await expect(page.getByText("Mudança funcional no produto existente").first()).toBeVisible();
@@ -420,7 +427,7 @@ else if (command[0] === "exec") {
     expect(await readdir(workspace)).toEqual(["sentinel.txt"]);
 
     await page.getByRole("button", { name: "Aprovar e executar" }).click();
-    expect(await waitForRun(page, "completed")).toBe(runId);
+    expect(await waitForRun(page, "completed", runId)).toBe(runId);
     await expect(page.getByRole("heading", { name: "Execução concluída" })).toBeVisible();
     await expect(page.getByText("Chats dos agentes", { exact: true })).toBeVisible();
     const dispatchedAgentCount = await page.evaluate(
@@ -444,7 +451,15 @@ else if (command[0] === "exec") {
     }
     expect(await readFile(sentinel, "utf8")).toBe("do not change\n");
 
-    const recentConversation = page.locator("aside").getByTitle("Execute o fluxo Maestro E2E");
+    await page.getByRole("button", { name: /Mission Control/ }).click();
+    await expect(page.getByRole("heading", { name: "Mission Control" })).toBeVisible();
+    await expect(page.getByText("Trabalhos", { exact: true })).toBeVisible();
+    await expect(page.getByText("Dependências e escopo", { exact: true })).toBeVisible();
+
+    const recentConversation = page
+      .getByLabel("Barra lateral")
+      .getByTitle("Execute o fluxo Maestro E2E");
+    await recentConversation.click();
     await recentConversation.click({ button: "right" });
     await expect(page.getByRole("menuitem", { name: "Renomear" })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: "Excluir conversa" })).toBeVisible();
@@ -456,11 +471,83 @@ else if (command[0] === "exec") {
     await page.getByRole("button", { name: "Salvar título" }).click();
     await expect(page.locator("aside").getByTitle("Fluxo Maestro E2E")).toBeVisible();
 
-    await page
-      .getByRole("button", { name: /Maestro/ })
-      .last()
-      .click();
-    await page.getByRole("button", { name: /Agente Coding agent direto/ }).click();
+    await expect(page.getByRole("button", { name: /Responder/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Studio/ })).toBeVisible();
+    const nextSurface = await page.evaluate(async () => {
+      const bootstrap = await window.maestro.bootstrap();
+      const conversation = bootstrap.recentConversations[0]!;
+      const timeline = await window.maestro.getSessionTimeline(conversation.id, 0, 1_000);
+      const turn = timeline.items.find((item) => item.kind === "message" && item.turnId)?.turnId;
+      if (!turn) throw new Error("Turno não encontrado na timeline");
+      const branch = await window.maestro.forkAtTurn({
+        sessionId: conversation.id,
+        turnId: turn,
+        name: "E2E branch",
+      });
+      const artifact = await window.maestro.createArtifact({
+        projectId: conversation.projectId,
+        sessionId: conversation.id,
+        branchId: branch.id,
+        turnId: turn,
+        title: "Artefato E2E",
+        kind: "markdown",
+        content: "# Artefato E2E",
+      });
+      const connector = await window.maestro.configureConnector({
+        projectId: conversation.projectId,
+        name: "MCP local E2E",
+        kind: "mcp_stdio",
+        enabled: true,
+        config: { command: "node", args: ["fixture.js"], timeoutMs: 5_000 },
+      });
+      const firstGrant = await window.maestro.grantConnector({
+        connectorId: connector.id,
+        capability: "read",
+      });
+      await window.maestro.revokeConnector(connector.id, firstGrant.id);
+      await window.maestro.grantConnector({ connectorId: connector.id, capability: "read" });
+      const connectorGrants = await window.maestro.listConnectorGrants(connector.id);
+      const autonomy = [];
+      for (const level of ["observe", "review", "autopilot"] as const)
+        autonomy.push(
+          (await window.maestro.setProjectAutonomy(conversation.projectId, level)).level,
+        );
+      return {
+        branch: branch.name,
+        artifactVersion: artifact.artifact.currentVersion,
+        connectorKind: connector.kind,
+        connectorGrants: connectorGrants.filter((grant) => grant.granted).length,
+        autonomy,
+        hasPlan: timeline.items.some((item) => item.kind === "plan"),
+      };
+    });
+    expect(nextSurface).toEqual({
+      branch: "E2E branch",
+      artifactVersion: 1,
+      connectorKind: "mcp_stdio",
+      connectorGrants: 1,
+      autonomy: ["observe", "review", "autopilot"],
+      hasPlan: true,
+    });
+    await page.reload();
+    await expect(page.getByRole("complementary", { name: "Barra lateral" })).toBeVisible();
+    await page.locator("aside").getByTitle("Fluxo Maestro E2E").click();
+    await page.getByRole("button", { name: "Comparar respostas entre branches" }).click();
+    const branchComparisonDialog = page.getByRole("dialog", {
+      name: "Comparar respostas entre branches",
+    });
+    await expect(branchComparisonDialog).toBeVisible();
+    await expect(branchComparisonDialog.getByText("E2E branch", { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("maestro-compare.png") });
+    await page.getByRole("button", { name: "Fechar comparação" }).click();
+    const studioButton = page.getByRole("button", { name: /Studio/ });
+    if ((await studioButton.getAttribute("aria-pressed")) !== "true") await studioButton.click();
+    await expect(page.getByLabel("Conteúdo do artefato")).toHaveValue("# Artefato E2E");
+    await page.getByRole("tab", { name: "Contexto" }).click();
+    await expect(page.getByText("MCP local E2E", { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("maestro-studio.png") });
+    await page.getByRole("button", { name: "Fechar Studio" }).click();
+
     await page.keyboard.press("Control+Shift+M");
     await expect(page.getByRole("dialog", { name: "Troca rápida de modelo" })).toBeVisible();
     await page
@@ -468,18 +555,8 @@ else if (command[0] === "exec") {
       .first()
       .click();
     await page
-      .getByPlaceholder("Peça uma alteração direta no workspace…")
-      .fill("Responda pela fixture direta");
-    await page.getByRole("button", { name: "Enviar" }).click();
-    await expect(page.getByText("Direct agent fixture complete.", { exact: true })).toBeVisible();
-
-    await page
-      .getByRole("button", { name: /Agente/ })
-      .last()
-      .click();
-    await page.getByRole("button", { name: /Chat Conversa sem ferramentas/ }).click();
-    await expect(page.getByText("Sem acesso ao workspace")).toBeVisible();
-    await page.getByPlaceholder("Escreva uma mensagem…").fill("Diga olá");
+      .getByPlaceholder("Descreva a intenção; o Maestro decide como ajudar…")
+      .fill("Diga olá");
     await page.getByRole("button", { name: "Enviar" }).click();
     await expect(page.getByText("Olá do chat E2E.", { exact: true })).toBeVisible();
 
@@ -487,7 +564,9 @@ else if (command[0] === "exec") {
     await expect(page.getByRole("dialog", { name: "Troca rápida de modelo" })).toBeVisible();
     await page.getByRole("button", { name: /Fixture Codex Fast/ }).click();
     await expect(page.getByText("Troca preparada:", { exact: true })).toBeVisible();
-    await page.getByPlaceholder("Escreva uma mensagem…").fill("Continue no modelo rápido");
+    await page
+      .getByPlaceholder("Descreva a intenção; o Maestro decide como ajudar…")
+      .fill("Continue no modelo rápido");
     await page.getByRole("button", { name: "Enviar" }).click();
     await expect(
       page.getByText("Fast-switch com contexto recebido.", { exact: true }),
@@ -579,7 +658,6 @@ else if (command[0] === "exec") {
       page.getByText(/Calcula contagens e métricas de uso somente neste dispositivo/),
     ).toBeVisible();
     await page.getByLabel("Canal de atualização").selectOption("beta");
-    await page.getByLabel("Modo padrão de conversa").selectOption("chat");
     await page.getByLabel("Otimização de tokens").selectOption("aggressive");
     await page.getByLabel("Concorrência global (1–16)").fill("7");
     await page.getByRole("switch", { name: "Telemetria local" }).click();
@@ -595,7 +673,6 @@ else if (command[0] === "exec") {
         return {
           theme: settings.theme,
           updateChannel: settings.updateChannel,
-          defaultMode: settings.defaultMode,
           globalConcurrency: settings.globalConcurrency,
           telemetryEnabled: settings.telemetryEnabled,
           tokenOptimizationMode: settings.tokenOptimizationMode,
@@ -604,7 +681,6 @@ else if (command[0] === "exec") {
       .toEqual({
         theme: "light",
         updateChannel: "beta",
-        defaultMode: "chat",
         globalConcurrency: 7,
         telemetryEnabled: true,
         tokenOptimizationMode: "aggressive",
@@ -612,7 +688,6 @@ else if (command[0] === "exec") {
     await page.getByRole("tab", { name: "Geral", exact: true }).click();
     await expect(page.getByText("Preferências salvas automaticamente")).toBeVisible();
     await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
-    await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
     await expect(page.getByLabel("Otimização de tokens")).toHaveValue("aggressive");
     await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
     await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();
@@ -623,7 +698,6 @@ else if (command[0] === "exec") {
     await page.getByRole("button", { name: "Configurações" }).click();
     await page.getByRole("tab", { name: "Geral", exact: true }).click();
     await expect(page.getByLabel("Canal de atualização")).toHaveValue("beta");
-    await expect(page.getByLabel("Modo padrão de conversa")).toHaveValue("chat");
     await expect(page.getByLabel("Otimização de tokens")).toHaveValue("aggressive");
     await expect(page.getByLabel("Concorrência global (1–16)")).toHaveValue("7");
     await expect(page.getByRole("switch", { name: "Telemetria local" })).toBeChecked();

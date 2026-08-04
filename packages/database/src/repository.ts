@@ -2,11 +2,22 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import BetterSqlite3 from "better-sqlite3";
-import { and, asc, desc, eq, exists, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, isNotNull, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { ulid } from "ulid";
 import {
   DEFAULT_APP_SETTINGS,
+  artifactSchema,
+  artifactVersionSchema,
+  autonomyProfileSchema,
+  backgroundJobSchema,
+  connectorGrantSchema,
+  connectorInvocationSchema,
+  connectorSchema,
+  citationSchema,
+  memoryRecordSchema,
+  sessionBranchSchema,
+  sourceSnapshotSchema,
   appSettingsSchema,
   contextCheckpointSchema,
   executionPolicySchema,
@@ -16,14 +27,27 @@ import {
   toolResultSchema,
   turnSchema,
   type AppSettings,
+  type Artifact,
+  type ArtifactDetail,
+  type AutonomyLevel,
+  type AutonomyProfile,
+  type BackgroundJob,
+  type Connector,
+  type ConnectorGrant,
+  type ConnectorInvocation,
+  type Citation,
+  type CreateArtifactInput,
   type Attachment,
   type ContextAssetSummary,
   type ContextCheckpoint,
   type Conversation,
   type EventPage,
+  type GlobalSearchResult,
   type Message,
   type MessageRole,
   type MessageStatus,
+  type MemoryFilter,
+  type MemoryRecord,
   type ModelSelection,
   type ModelTelemetry,
   type NewRunEvent,
@@ -38,7 +62,11 @@ import {
   type RunMode,
   type RunSpec,
   type RunState,
+  type SaveMemoryInput,
   type SessionKind,
+  type SessionBranch,
+  type SessionTimelinePage,
+  type SourceSnapshot,
   type TaskRun,
   type TaskSpec,
   type ToolCall,
@@ -46,23 +74,37 @@ import {
   type Turn,
   type TurnItem,
   type TurnState,
+  type TimelineItem,
+  type UpdateArtifactInput,
+  type UpdateMemoryInput,
   type ExecutionPolicy,
   type WorkspaceRoot,
 } from "@maestro/contracts";
-import { assertRunTransition, MaestroError } from "@maestro/core";
+import { assertRunTransition, extractMemoryCandidates, MaestroError } from "@maestro/core";
 import {
   AGENT_RUNTIME_MIGRATION,
   INITIAL_MIGRATION,
+  MAESTRO_NEXT_MIGRATION,
   MULTI_ACCOUNT_MIGRATION,
   MULTIMODAL_CONTEXT_MIGRATION,
 } from "./migration.js";
 import {
   appMetadata,
   approvals,
+  artifacts,
+  artifactVersions,
+  auditEvents,
+  autonomyProfiles,
+  backgroundJobs,
+  citations,
+  connectorGrants,
+  connectorInvocations,
+  connectors,
   conversations,
   contextAssets,
   contextCheckpoints,
   messages,
+  memoryRecords,
   messageContextAssets,
   modelTelemetry,
   pendingModelSwitches,
@@ -76,6 +118,8 @@ import {
   schema,
   secrets,
   settings,
+  sessionBranches,
+  sourceSnapshots,
   taskRuns,
   toolCalls,
   toolArtifacts,
@@ -91,6 +135,25 @@ function now(): string {
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function configContainsSecret(value: unknown, seen = new Set<object>()): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => configContainsSecret(item, seen));
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      /token|secret|password|authorization|bearer|api.?key|private.?key/i.test(key) ||
+      configContainsSecret(entry, seen),
+  );
+}
+
+function jobStateForRun(state: RunState): BackgroundJob["state"] {
+  if (state === "completed" || state === "failed" || state === "canceled") return state;
+  if (state === "awaiting_clarification" || state === "awaiting_approval") return "blocked";
+  if (state === "queued") return "queued";
+  return "running";
 }
 
 export interface SecretRecord {
@@ -188,6 +251,7 @@ function contextAssetSummary(record: ContextAssetRecord): ContextAssetSummary {
 export class MaestroRepository {
   readonly sqlite: BetterSqlite3.Database;
   readonly db: ReturnType<typeof drizzle<typeof schema>>;
+  readonly migrationBackupPath: string | null;
 
   constructor(filename: string) {
     if (filename !== ":memory:") mkdirSync(path.dirname(filename), { recursive: true });
@@ -197,6 +261,20 @@ export class MaestroRepository {
     if (filename !== ":memory:") this.sqlite.pragma("journal_mode = WAL");
     this.sqlite.pragma("synchronous = NORMAL");
     this.sqlite.exec(INITIAL_MIGRATION);
+    const appliedBeforeUpgrade = this.sqlite
+      .prepare("SELECT version FROM schema_migrations ORDER BY version")
+      .all() as Array<{ version: number }>;
+    this.migrationBackupPath =
+      filename !== ":memory:" &&
+      appliedBeforeUpgrade.length > 0 &&
+      !appliedBeforeUpgrade.some((row) => row.version === 5)
+        ? `${filename}.pre-v5-${Date.now()}.bak`
+        : null;
+    if (this.migrationBackupPath) {
+      const escaped = this.migrationBackupPath.replaceAll("'", "''");
+      // VACUUM INTO produces a transactionally consistent snapshot, including WAL state.
+      this.sqlite.exec(`VACUUM INTO '${escaped}'`);
+    }
     this.sqlite
       .prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
       .run(1, now());
@@ -231,6 +309,17 @@ export class MaestroRepository {
         this.sqlite
           .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
           .run(4, now());
+      })();
+    }
+    const migration5 = this.sqlite
+      .prepare("SELECT version FROM schema_migrations WHERE version = 5")
+      .get();
+    if (!migration5) {
+      this.sqlite.transaction(() => {
+        this.sqlite.exec(MAESTRO_NEXT_MIGRATION);
+        this.sqlite
+          .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(5, now());
       })();
     }
     this.db = drizzle(this.sqlite, { schema });
@@ -419,7 +508,7 @@ export class MaestroRepository {
       updatedAt: timestamp,
     };
     await this.db.insert(conversations).values(row);
-    return row;
+    return this.getConversation(row.id);
   }
 
   async createConversationDraft(input: ConversationInput): Promise<Conversation> {
@@ -546,14 +635,20 @@ export class MaestroRepository {
 
   private deleteWithRunEventCascade(table: "projects" | "conversations", id: string): void {
     this.sqlite.transaction(() => {
-      // Run events remain append-only during normal operation. A confirmed parent
-      // deletion is the sole exception and removes the complete related graph.
+      // Logs remain append-only during normal operation. A confirmed parent deletion
+      // removes run events and lets SQLite detach the retained audit trail from the
+      // deleted parent through its ON DELETE SET NULL foreign keys.
       this.sqlite.exec("DROP TRIGGER IF EXISTS run_events_no_delete");
+      this.sqlite.exec("DROP TRIGGER IF EXISTS audit_events_no_update");
       this.sqlite.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
       this.sqlite.exec(`
         CREATE TRIGGER run_events_no_delete
         BEFORE DELETE ON run_events BEGIN
           SELECT RAISE(ABORT, 'run_events is append-only');
+        END;
+        CREATE TRIGGER audit_events_no_update
+        BEFORE UPDATE ON audit_events BEGIN
+          SELECT RAISE(ABORT, 'audit_events is append-only');
         END;
       `);
     })();
@@ -580,6 +675,141 @@ export class MaestroRepository {
       .where(and(eq(conversations.projectId, projectId), exists(messagesForConversation)))
       .orderBy(desc(conversations.updatedAt))
       .limit(Math.max(1, Math.min(limit, 500)));
+  }
+
+  async listSessionBranches(sessionId: string): Promise<SessionBranch[]> {
+    await this.getConversation(sessionId);
+    const rows = await this.db
+      .select()
+      .from(sessionBranches)
+      .where(eq(sessionBranches.sessionId, sessionId))
+      .orderBy(asc(sessionBranches.createdAt));
+    return rows.map((row) => sessionBranchSchema.parse(row));
+  }
+
+  async getSessionBranch(branchId: string): Promise<SessionBranch> {
+    const [row] = await this.db
+      .select()
+      .from(sessionBranches)
+      .where(eq(sessionBranches.id, branchId))
+      .limit(1);
+    if (!row) throw new MaestroError("BRANCH_NOT_FOUND", "Ramificação não encontrada.");
+    return sessionBranchSchema.parse(row);
+  }
+
+  private async branchLineage(
+    branchId: string,
+  ): Promise<Array<{ branch: SessionBranch; cutoff: string | null }>> {
+    const lineage: Array<{ branch: SessionBranch; cutoff: string | null }> = [];
+    const seen = new Set<string>();
+    let current = await this.getSessionBranch(branchId);
+    let cutoff: string | null = null;
+    while (true) {
+      if (seen.has(current.id))
+        throw new MaestroError("BRANCH_GRAPH_CYCLE", "O grafo de ramificações contém um ciclo.");
+      seen.add(current.id);
+      lineage.push({ branch: current, cutoff });
+      if (!current.parentBranchId) break;
+      if (!current.forkedFromTurnId)
+        throw new MaestroError(
+          "BRANCH_DIVERGENCE_MISSING",
+          "A ramificação não possui um ponto de divergência verificável.",
+        );
+      const divergence = await this.getTurn(current.forkedFromTurnId);
+      cutoff = divergence.createdAt;
+      const parent = await this.getSessionBranch(current.parentBranchId);
+      if (parent.sessionId !== current.sessionId)
+        throw new MaestroError(
+          "BRANCH_SESSION_MISMATCH",
+          "A ramificação pai pertence a outra sessão.",
+        );
+      current = parent;
+    }
+    return lineage.reverse();
+  }
+
+  async forkAtTurn(input: {
+    sessionId: string;
+    turnId: string;
+    name?: string;
+  }): Promise<SessionBranch> {
+    const [conversation, turn] = await Promise.all([
+      this.getConversation(input.sessionId),
+      this.getTurn(input.turnId),
+    ]);
+    if (turn.conversationId !== conversation.id)
+      throw new MaestroError("TURN_SESSION_MISMATCH", "O turno não pertence à sessão selecionada.");
+    const parentBranchId = conversation.activeBranchId ?? turn.branchId ?? null;
+    if (!parentBranchId)
+      throw new MaestroError("BRANCH_NOT_FOUND", "A sessão não possui uma branch ativa.");
+    const parent = await this.getSessionBranch(parentBranchId);
+    const lineage = await this.branchLineage(parent.id);
+    if (
+      !lineage.some(
+        (segment) =>
+          segment.branch.id === turn.branchId &&
+          (!segment.cutoff || turn.createdAt <= segment.cutoff),
+      )
+    )
+      throw new MaestroError("TURN_NOT_IN_BRANCH", "O turno não está visível na branch ativa.");
+    const timestamp = now();
+    const branch = sessionBranchSchema.parse({
+      id: ulid(),
+      sessionId: conversation.id,
+      parentBranchId: parent.id,
+      forkedFromTurnId: turn.id,
+      name:
+        input.name?.trim() ||
+        `Alternativa ${((await this.listSessionBranches(conversation.id)).length + 1).toString()}`,
+      isRoot: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare(
+          `INSERT INTO session_branches(
+             id, session_id, parent_branch_id, forked_from_turn_id, name, is_root,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+        )
+        .run(
+          branch.id,
+          branch.sessionId,
+          branch.parentBranchId,
+          branch.forkedFromTurnId,
+          branch.name,
+          branch.createdAt,
+          branch.updatedAt,
+        );
+      this.sqlite
+        .prepare("UPDATE conversations SET active_branch_id = ?, updated_at = ? WHERE id = ?")
+        .run(branch.id, timestamp, conversation.id);
+    })();
+    await this.appendAuditEvent({
+      projectId: conversation.projectId,
+      sessionId: conversation.id,
+      type: "session.branch.created",
+      payload: { branchId: branch.id, parentBranchId: parent.id, turnId: turn.id },
+    });
+    return branch;
+  }
+
+  async switchSessionBranch(sessionId: string, branchId: string): Promise<SessionBranch> {
+    const [conversation, branch] = await Promise.all([
+      this.getConversation(sessionId),
+      this.getSessionBranch(branchId),
+    ]);
+    if (branch.sessionId !== conversation.id)
+      throw new MaestroError(
+        "BRANCH_SESSION_MISMATCH",
+        "A ramificação não pertence à sessão selecionada.",
+      );
+    await this.db
+      .update(conversations)
+      .set({ activeBranchId: branch.id, updatedAt: now() })
+      .where(eq(conversations.id, conversation.id));
+    return branch;
   }
 
   async createContextAsset(
@@ -791,8 +1021,9 @@ export class MaestroRepository {
     attachments?: Attachment[];
     contextAssetIds?: string[];
     providerMessageId?: string | null;
+    branchId?: string | null;
   }): Promise<Message> {
-    await this.getConversation(input.conversationId);
+    const conversation = await this.getConversation(input.conversationId);
     const timestamp = now();
     const row: typeof messages.$inferInsert = {
       id: ulid(),
@@ -803,6 +1034,7 @@ export class MaestroRepository {
       status: input.status ?? "completed",
       attachments: input.attachments ?? [],
       providerMessageId: input.providerMessageId ?? null,
+      branchId: input.branchId ?? conversation.activeBranchId ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -811,8 +1043,8 @@ export class MaestroRepository {
         .prepare(
           `INSERT INTO messages(
              id, conversation_id, run_id, role, content, status, attachments,
-             provider_message_id, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             provider_message_id, branch_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.id,
@@ -823,6 +1055,7 @@ export class MaestroRepository {
           row.status,
           JSON.stringify(row.attachments),
           row.providerMessageId,
+          row.branchId,
           row.createdAt,
           row.updatedAt,
         );
@@ -858,6 +1091,7 @@ export class MaestroRepository {
       attachments: row.attachments ?? [],
       contextAssets: await this.contextAssetsForMessage(row.id),
       providerMessageId: row.providerMessageId ?? null,
+      branchId: row.branchId ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -876,12 +1110,39 @@ export class MaestroRepository {
     return { ...row, contextAssets: await this.contextAssetsForMessage(row.id) };
   }
 
-  async listMessages(conversationId: string): Promise<Message[]> {
-    const rows = await this.db
-      .select()
-      .from(messages)
-      .where(eq(messages.conversationId, conversationId))
-      .orderBy(asc(messages.createdAt));
+  async listMessages(conversationId: string, branchId?: string | null): Promise<Message[]> {
+    const conversation = await this.getConversation(conversationId);
+    const activeBranchId = branchId ?? conversation.activeBranchId ?? null;
+    const lineage = activeBranchId ? await this.branchLineage(activeBranchId) : [];
+    const rows =
+      lineage.length === 0
+        ? await this.db
+            .select()
+            .from(messages)
+            .where(eq(messages.conversationId, conversationId))
+            .orderBy(asc(messages.createdAt), asc(messages.id))
+        : (
+            await Promise.all(
+              lineage.map((segment) =>
+                this.db
+                  .select()
+                  .from(messages)
+                  .where(
+                    and(
+                      eq(messages.conversationId, conversationId),
+                      eq(messages.branchId, segment.branch.id),
+                      ...(segment.cutoff ? [lte(messages.createdAt, segment.cutoff)] : []),
+                    ),
+                  )
+                  .orderBy(asc(messages.createdAt), asc(messages.id)),
+              ),
+            )
+          )
+            .flat()
+            .sort(
+              (left, right) =>
+                left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+            );
     if (rows.length === 0) return [];
     const links = await this.db
       .select()
@@ -919,6 +1180,9 @@ export class MaestroRepository {
 
   async createRun(spec: RunSpec, initialState: RunState): Promise<Run> {
     const parsed = runSpecSchema.parse(spec);
+    const conversation = await this.getConversation(parsed.conversationId);
+    const branchId = parsed.branchId ?? conversation.activeBranchId ?? null;
+    const persistedSpec = runSpecSchema.parse({ ...parsed, branchId });
     const timestamp = now();
     const row: Run = {
       id: parsed.id,
@@ -926,7 +1190,7 @@ export class MaestroRepository {
       conversationId: parsed.conversationId,
       mode: parsed.mode,
       state: initialState,
-      spec: parsed,
+      spec: persistedSpec,
       currentPlanVersion: null,
       integrationBranch: null,
       integrationPath: null,
@@ -935,8 +1199,28 @@ export class MaestroRepository {
       updatedAt: timestamp,
       startedAt: initialState === "running" ? timestamp : null,
       finishedAt: null,
+      branchId,
     };
     await this.db.insert(runs).values(row);
+    await this.db.insert(backgroundJobs).values({
+      id: `run-${row.id}`,
+      projectId: row.projectId,
+      sessionId: row.conversationId,
+      branchId,
+      runId: row.id,
+      parentJobId: null,
+      title: parsed.prompt.slice(0, 180) || `Execução ${row.id.slice(0, 8)}`,
+      kind: "run",
+      state: jobStateForRun(initialState),
+      progress: null,
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      detail: { mode: row.mode },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      finishedAt: null,
+    });
     return row;
   }
 
@@ -1003,6 +1287,15 @@ export class MaestroRepository {
           options.integrationPath === undefined ? current.integrationPath : options.integrationPath,
       })
       .where(eq(runs.id, runId));
+    await this.db
+      .update(backgroundJobs)
+      .set({
+        state: jobStateForRun(to),
+        progress: to === "completed" ? 1 : null,
+        updatedAt: timestamp,
+        finishedAt: terminal ? timestamp : null,
+      })
+      .where(eq(backgroundJobs.id, `run-${runId}`));
     return this.getRun(runId);
   }
 
@@ -1116,6 +1409,7 @@ export class MaestroRepository {
     planVersion: number,
     specs: readonly TaskSpec[],
   ): Promise<TaskRun[]> {
+    const run = await this.getRun(runId);
     const timestamp = now();
     const rows: TaskRun[] = specs.map((spec) => ({
       id: ulid(),
@@ -1134,7 +1428,36 @@ export class MaestroRepository {
       startedAt: null,
       finishedAt: null,
     }));
-    if (rows.length > 0) await this.db.insert(taskRuns).values(rows);
+    if (rows.length > 0) {
+      await this.db.insert(taskRuns).values(rows);
+      await this.db.insert(backgroundJobs).values(
+        rows.map((task) => ({
+          id: `task-${task.id}`,
+          projectId: run.projectId,
+          sessionId: run.conversationId,
+          branchId: run.branchId,
+          runId,
+          parentJobId: `run-${runId}`,
+          title: task.spec.title,
+          kind: "agent" as const,
+          state: "queued" as const,
+          progress: 0,
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          detail: {
+            taskId: task.taskId,
+            role: task.spec.role,
+            dependencies: task.spec.dependencies,
+            model: task.spec.model,
+            successCriteria: task.spec.successCriteria,
+          },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          finishedAt: null,
+        })),
+      );
+    }
     return rows;
   }
 
@@ -1182,6 +1505,33 @@ export class MaestroRepository {
       .limit(1);
     if (!updated)
       throw new MaestroError("TASK_RUN_NOT_FOUND", "Execução de tarefa não encontrada.");
+    const jobState =
+      state === "pending"
+        ? "queued"
+        : state === "skipped"
+          ? "completed"
+          : state === "validating"
+            ? "running"
+            : state;
+    await this.db
+      .update(backgroundJobs)
+      .set({
+        state: jobState,
+        progress: state === "completed" || state === "skipped" ? 1 : null,
+        updatedAt: timestamp,
+        finishedAt: terminal ? timestamp : null,
+        detail: {
+          taskId: updated.taskId,
+          role: updated.spec.role,
+          dependencies: updated.spec.dependencies,
+          model: updated.spec.model,
+          successCriteria: updated.spec.successCriteria,
+          branch: updated.branch,
+          worktreePath: updated.worktreePath,
+          error: updated.error,
+        },
+      })
+      .where(eq(backgroundJobs.id, `task-${current.id}`));
     return updated;
   }
 
@@ -1195,17 +1545,27 @@ export class MaestroRepository {
       const sequence = result.sequence + 1;
       const id = ulid();
       const occurredAt = event.occurredAt ?? now();
+      const schemaVersion = event.schemaVersion ?? 2;
       this.sqlite
         .prepare(
-          "INSERT INTO run_events(id, run_id, sequence, type, payload, occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO run_events(id, run_id, sequence, type, payload, schema_version, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .run(id, event.runId, sequence, event.type, JSON.stringify(event.data), occurredAt);
+        .run(
+          id,
+          event.runId,
+          sequence,
+          event.type,
+          JSON.stringify(event.data),
+          schemaVersion,
+          occurredAt,
+        );
       return {
         id,
         runId: event.runId,
         sequence,
         type: event.type,
         data: event.data,
+        schemaVersion,
         occurredAt,
       } as RunEvent<K>;
     });
@@ -1215,7 +1575,7 @@ export class MaestroRepository {
   getEvents(runId: string, afterSequence = 0, limit = 500): Promise<EventPage> {
     const rows = this.sqlite
       .prepare(
-        "SELECT id, run_id, sequence, type, payload, occurred_at FROM run_events WHERE run_id=? AND sequence>? ORDER BY sequence ASC LIMIT ?",
+        "SELECT id, run_id, sequence, type, payload, schema_version, occurred_at FROM run_events WHERE run_id=? AND sequence>? ORDER BY sequence ASC LIMIT ?",
       )
       .all(runId, afterSequence, Math.max(1, Math.min(limit, 2_000))) as Array<{
       id: string;
@@ -1223,6 +1583,7 @@ export class MaestroRepository {
       sequence: number;
       type: RunEvent["type"];
       payload: string;
+      schema_version: number;
       occurred_at: string;
     }>;
     const events = rows.map((row) => ({
@@ -1231,6 +1592,7 @@ export class MaestroRepository {
       sequence: row.sequence,
       type: row.type,
       data: parseJson(row.payload),
+      schemaVersion: row.schema_version,
       occurredAt: row.occurred_at,
     })) as RunEvent[];
     const [last] = events.slice(-1);
@@ -1263,10 +1625,14 @@ export class MaestroRepository {
 
   async createTurn(turn: Turn): Promise<Turn> {
     const parsed = turnSchema.parse(turn);
-    await this.getConversation(parsed.conversationId);
+    const conversation = await this.getConversation(parsed.conversationId);
     if (parsed.runId) await this.getRun(parsed.runId);
-    await this.db.insert(turns).values(parsed);
-    return parsed;
+    const value = turnSchema.parse({
+      ...parsed,
+      branchId: parsed.branchId ?? conversation.activeBranchId ?? null,
+    });
+    await this.db.insert(turns).values(value);
+    return value;
   }
 
   async getTurn(turnId: string): Promise<Turn> {
@@ -1815,6 +2181,1033 @@ export class MaestroRepository {
     };
     await this.upsertModelTelemetry(value);
     return value;
+  }
+
+  async appendAuditEvent(input: {
+    projectId?: string | null;
+    sessionId?: string | null;
+    runId?: string | null;
+    type: string;
+    payload: Record<string, unknown>;
+    occurredAt?: string;
+  }): Promise<string> {
+    const id = ulid();
+    await this.db.insert(auditEvents).values({
+      id,
+      projectId: input.projectId ?? null,
+      sessionId: input.sessionId ?? null,
+      runId: input.runId ?? null,
+      type: input.type,
+      payload: input.payload,
+      schemaVersion: 2,
+      occurredAt: input.occurredAt ?? now(),
+    });
+    return id;
+  }
+
+  async saveSourceSnapshot(
+    input: Omit<SourceSnapshot, "id" | "contentHash" | "accessedAt"> & {
+      id?: string;
+      accessedAt?: string;
+    },
+  ): Promise<SourceSnapshot> {
+    await this.getProject(input.projectId);
+    const snapshot = sourceSnapshotSchema.parse({
+      ...input,
+      id: input.id ?? ulid(),
+      contentHash: createHash("sha256")
+        .update(`${input.url}\n${input.title}\n${input.excerpt}`)
+        .digest("hex"),
+      accessedAt: input.accessedAt ?? now(),
+    });
+    await this.db.insert(sourceSnapshots).values(snapshot);
+    await this.appendAuditEvent({
+      projectId: snapshot.projectId,
+      type: "source.accessed",
+      payload: {
+        sourceSnapshotId: snapshot.id,
+        url: snapshot.url,
+        provider: snapshot.provider,
+      },
+      occurredAt: snapshot.accessedAt,
+    });
+    return snapshot;
+  }
+
+  async saveCitation(input: Omit<Citation, "id" | "createdAt">): Promise<Citation> {
+    const citation = citationSchema.parse({ ...input, id: ulid(), createdAt: now() });
+    const [source] = await this.db
+      .select()
+      .from(sourceSnapshots)
+      .where(eq(sourceSnapshots.id, citation.sourceSnapshotId))
+      .limit(1);
+    if (!source) throw new MaestroError("SOURCE_NOT_FOUND", "Fonte citada não encontrada.");
+    if (source.projectId !== citation.projectId)
+      throw new MaestroError("SOURCE_PROJECT_MISMATCH", "A fonte pertence a outro projeto.");
+    await this.db.insert(citations).values(citation);
+    return citation;
+  }
+
+  async listCitationSources(
+    sessionId: string,
+  ): Promise<Array<{ source: SourceSnapshot; citation: Citation }>> {
+    const rows = await this.db
+      .select({ source: sourceSnapshots, citation: citations })
+      .from(citations)
+      .innerJoin(sourceSnapshots, eq(sourceSnapshots.id, citations.sourceSnapshotId))
+      .where(eq(citations.sessionId, sessionId))
+      .orderBy(asc(citations.createdAt));
+    return rows.map((row) => ({
+      source: sourceSnapshotSchema.parse(row.source),
+      citation: citationSchema.parse(row.citation),
+    }));
+  }
+
+  async getSessionTimeline(
+    sessionId: string,
+    cursor?: number,
+    limit = 250,
+    branchId?: string,
+  ): Promise<SessionTimelinePage> {
+    const conversation = await this.getConversation(sessionId);
+    const activeBranchId = branchId ?? conversation.activeBranchId ?? null;
+    const [branches, sessionMessages, branchArtifacts, allTurns, citationSources] =
+      await Promise.all([
+        this.listSessionBranches(sessionId),
+        this.listMessages(sessionId, activeBranchId),
+        this.listArtifacts(conversation.projectId, sessionId),
+        this.listTurns({ conversationId: sessionId }),
+        this.listCitationSources(sessionId),
+      ]);
+    const messageIds = new Set(sessionMessages.map((message) => message.id));
+    const visibleTurns = allTurns.filter(
+      (turn) =>
+        (turn.inputMessageId !== null && messageIds.has(turn.inputMessageId)) ||
+        (turn.outputMessageId !== null && messageIds.has(turn.outputMessageId)),
+    );
+    const turnByMessage = new Map<string, Turn>();
+    const turnByRun = new Map<string, Turn>();
+    for (const turn of visibleTurns) {
+      if (turn.inputMessageId) turnByMessage.set(turn.inputMessageId, turn);
+      if (turn.outputMessageId) turnByMessage.set(turn.outputMessageId, turn);
+      if (turn.runId) turnByRun.set(turn.runId, turn);
+    }
+    const runIds = new Set([
+      ...sessionMessages.flatMap((message) => (message.runId ? [message.runId] : [])),
+      ...visibleTurns.flatMap((turn) => (turn.runId ? [turn.runId] : [])),
+    ]);
+    const sessionRuns = (
+      await Promise.all([...runIds].map((runId) => this.getRun(runId).catch(() => null)))
+    ).filter((run): run is Run => run !== null);
+    const eventGroups = await Promise.all(
+      sessionRuns.map((run) => this.getEvents(run.id, 0, 2_000).then((page) => page.events)),
+    );
+    const items: Array<TimelineItem & { sortAt: string; sortRank: number }> = [];
+    for (const message of sessionMessages) {
+      const turn = turnByMessage.get(message.id);
+      items.push({
+        id: `message:${message.id}`,
+        sessionId,
+        branchId: message.branchId ?? activeBranchId,
+        turnId: turn?.id ?? null,
+        runId: message.runId,
+        sequence: 0,
+        kind: "message",
+        message,
+        createdAt: message.createdAt,
+        sortAt: message.role === "assistant" ? message.updatedAt : message.createdAt,
+        sortRank: message.role === "user" ? 0 : 9,
+      });
+    }
+    for (const events of eventGroups) {
+      for (const event of events) {
+        const turn = turnByRun.get(event.runId);
+        const run = sessionRuns.find((candidate) => candidate.id === event.runId);
+        const base = {
+          id: `event:${event.id}`,
+          sessionId,
+          branchId: run?.branchId ?? turn?.branchId ?? activeBranchId,
+          turnId: turn?.id ?? null,
+          runId: event.runId,
+          sequence: 0,
+          createdAt: event.occurredAt,
+          sortAt: event.occurredAt,
+          sortRank: 4,
+        };
+        switch (event.type) {
+          case "clarification.requested":
+            items.push({
+              ...base,
+              kind: "question",
+              questions: event.data.questions,
+              status: "pending",
+            });
+            break;
+          case "clarification.answered":
+            items.push({
+              ...base,
+              kind: "research",
+              title: "Requisitos esclarecidos",
+              summary: event.data.answer,
+              status: "completed",
+            });
+            break;
+          case "research.started":
+            items.push({
+              ...base,
+              kind: "research",
+              title: "Pesquisa",
+              summary: event.data.topics.join(" · "),
+              status: "running",
+            });
+            break;
+          case "research.finding":
+            items.push({
+              ...base,
+              kind: "research",
+              title: event.data.finding.title,
+              summary: event.data.finding.detail,
+              status: "completed",
+            });
+            break;
+          case "plan.created":
+            items.push({ ...base, kind: "plan", plan: event.data.plan });
+            break;
+          case "agent.started":
+            items.push({
+              ...base,
+              kind: "agent",
+              agentId: event.data.agentId,
+              label: event.data.label,
+              status: "running",
+              detail: `${event.data.providerId} · ${event.data.modelId}`,
+            });
+            break;
+          case "agent.stopped":
+            items.push({
+              ...base,
+              kind: "agent",
+              agentId: event.data.agentId,
+              label: "Agente",
+              status: event.data.outcome,
+              detail: null,
+            });
+            break;
+          case "tool.started":
+            items.push({
+              ...base,
+              kind: "tool",
+              name: event.data.name,
+              status: "running",
+              summary: "Ferramenta iniciada",
+            });
+            break;
+          case "tool.completed":
+            items.push({
+              ...base,
+              kind: "tool",
+              name: event.data.name,
+              status: event.data.isError ? "failed" : "completed",
+              summary: event.data.isError
+                ? "A ferramenta retornou um erro"
+                : "Ferramenta concluída",
+            });
+            break;
+          case "connector.invoked":
+            items.push({
+              ...base,
+              kind: "tool",
+              name: `connector:${event.data.operation}`,
+              status: event.data.status,
+              summary: `${event.data.mutability} · ${event.data.connectorId}`,
+            });
+            break;
+          case "approval.required":
+            items.push({
+              ...base,
+              kind: "approval",
+              approvalId: event.data.approvalId,
+              status: "pending",
+              summary: event.data.summary,
+            });
+            break;
+          case "approval.resolved":
+            items.push({
+              ...base,
+              kind: "approval",
+              approvalId: event.data.approvalId,
+              status: event.data.decision,
+              summary: event.data.decision === "approved" ? "Limite aprovado" : "Limite negado",
+            });
+            break;
+          case "file.diff":
+            items.push({
+              ...base,
+              kind: "diff",
+              path: event.data.path,
+              patch: event.data.patch,
+              additions: event.data.additions ?? null,
+              deletions: event.data.deletions ?? null,
+            });
+            break;
+          case "command.completed":
+            items.push({
+              ...base,
+              kind: "validation",
+              label: "Comando",
+              status: event.data.exitCode === 0 ? "passed" : "failed",
+              detail:
+                event.data.exitCode === null ? event.data.signal : `exit ${event.data.exitCode}`,
+            });
+            break;
+          case "checkpoint.created":
+            items.push({ ...base, kind: "checkpoint", checkpoint: event.data.checkpoint });
+            break;
+          case "error":
+            items.push({
+              ...base,
+              kind: "error",
+              code: event.data.code,
+              message: event.data.message,
+              recoverable: event.data.recoverable,
+            });
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    for (const artifact of branchArtifacts) {
+      if (artifact.branchId && activeBranchId && artifact.branchId !== activeBranchId) continue;
+      items.push({
+        id: `artifact:${artifact.id}:${artifact.currentVersion}`,
+        sessionId,
+        branchId: artifact.branchId,
+        turnId: artifact.turnId,
+        runId: null,
+        sequence: 0,
+        kind: "artifact",
+        artifact,
+        createdAt: artifact.updatedAt,
+        sortAt: artifact.updatedAt,
+        sortRank: 7,
+      });
+    }
+    for (const { source, citation } of citationSources) {
+      if (citation.branchId && activeBranchId && citation.branchId !== activeBranchId) continue;
+      items.push({
+        id: `source:${citation.id}`,
+        sessionId,
+        branchId: citation.branchId,
+        turnId: citation.turnId,
+        runId: null,
+        sequence: 0,
+        kind: "source",
+        source,
+        citation,
+        createdAt: citation.createdAt,
+        sortAt: citation.createdAt,
+        sortRank: 6,
+      });
+    }
+    items.sort(
+      (left, right) =>
+        left.sortAt.localeCompare(right.sortAt) ||
+        left.sortRank - right.sortRank ||
+        left.id.localeCompare(right.id),
+    );
+    const normalized = items.map(({ sortAt: _sortAt, sortRank: _sortRank, ...item }, sequence) => ({
+      ...item,
+      sequence,
+    })) as TimelineItem[];
+    const boundedLimit = Math.max(1, Math.min(limit, 1_000));
+    const latestPageStart =
+      normalized.length === 0
+        ? 0
+        : Math.floor((normalized.length - 1) / boundedLimit) * boundedLimit;
+    const start = Math.min(
+      normalized.length,
+      Math.max(0, cursor === undefined ? latestPageStart : cursor),
+    );
+    const pageItems = normalized.slice(start, start + boundedLimit);
+    return {
+      sessionId,
+      activeBranchId,
+      branches,
+      items: pageItems,
+      cursor: start,
+      total: normalized.length,
+      previousCursor: start > 0 ? Math.max(0, start - boundedLimit) : null,
+      nextCursor: start + pageItems.length < normalized.length ? start + pageItems.length : null,
+    };
+  }
+
+  async listArtifacts(projectId: string, sessionId?: string): Promise<Artifact[]> {
+    await this.getProject(projectId);
+    const rows = await this.db
+      .select()
+      .from(artifacts)
+      .where(
+        sessionId
+          ? and(eq(artifacts.projectId, projectId), eq(artifacts.sessionId, sessionId))
+          : eq(artifacts.projectId, projectId),
+      )
+      .orderBy(desc(artifacts.pinned), desc(artifacts.updatedAt));
+    return rows.map((row) => artifactSchema.parse(row));
+  }
+
+  async openArtifact(artifactId: string): Promise<ArtifactDetail> {
+    const [row] = await this.db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId))
+      .limit(1);
+    if (!row) throw new MaestroError("ARTIFACT_NOT_FOUND", "Artefato não encontrado.");
+    const versions = await this.db
+      .select()
+      .from(artifactVersions)
+      .where(eq(artifactVersions.artifactId, artifactId))
+      .orderBy(desc(artifactVersions.version));
+    return {
+      artifact: artifactSchema.parse(row),
+      versions: versions.map((version) => artifactVersionSchema.parse(version)),
+    };
+  }
+
+  async createArtifact(input: CreateArtifactInput): Promise<ArtifactDetail> {
+    await this.getProject(input.projectId);
+    if (input.sessionId) {
+      const conversation = await this.getConversation(input.sessionId);
+      if (conversation.projectId !== input.projectId)
+        throw new MaestroError("ARTIFACT_PROJECT_MISMATCH", "A sessão pertence a outro projeto.");
+    }
+    const timestamp = now();
+    const artifactId = ulid();
+    const contentHash = createHash("sha256").update(input.content).digest("hex");
+    const mimeByKind: Record<Artifact["kind"], string> = {
+      markdown: "text/markdown",
+      code: "text/plain",
+      diff: "text/x-diff",
+      json: "application/json",
+      html: "text/html",
+      svg: "image/svg+xml",
+    };
+    this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare(
+          `INSERT INTO artifacts(
+             id, project_id, session_id, branch_id, turn_id, title, kind, language,
+             mime_type, current_version, pinned, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+        )
+        .run(
+          artifactId,
+          input.projectId,
+          input.sessionId ?? null,
+          input.branchId ?? null,
+          input.turnId ?? null,
+          input.title.trim(),
+          input.kind,
+          input.language ?? null,
+          input.mimeType ?? mimeByKind[input.kind],
+          input.pinned ? 1 : 0,
+          timestamp,
+          timestamp,
+        );
+      this.sqlite
+        .prepare(
+          `INSERT INTO artifact_versions(
+             id, artifact_id, version, content, content_hash, created_by,
+             source_event_id, created_at
+           ) VALUES (?, ?, 1, ?, ?, ?, NULL, ?)`,
+        )
+        .run(ulid(), artifactId, input.content, contentHash, input.createdBy ?? "user", timestamp);
+    })();
+    await this.appendAuditEvent({
+      projectId: input.projectId,
+      sessionId: input.sessionId ?? null,
+      type: "artifact.updated",
+      payload: { artifactId, version: 1, kind: input.kind },
+    });
+    return this.openArtifact(artifactId);
+  }
+
+  async updateArtifact(input: UpdateArtifactInput): Promise<ArtifactDetail> {
+    const current = await this.openArtifact(input.artifactId);
+    const timestamp = now();
+    const version = current.artifact.currentVersion + 1;
+    const contentHash = createHash("sha256").update(input.content).digest("hex");
+    this.sqlite.transaction(() => {
+      this.sqlite
+        .prepare(
+          `INSERT INTO artifact_versions(
+             id, artifact_id, version, content, content_hash, created_by,
+             source_event_id, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ulid(),
+          input.artifactId,
+          version,
+          input.content,
+          contentHash,
+          input.createdBy ?? "user",
+          input.sourceEventId ?? null,
+          timestamp,
+        );
+      this.sqlite
+        .prepare(
+          `UPDATE artifacts SET
+             current_version = ?,
+             title = CASE WHEN ? THEN ? ELSE title END,
+             language = CASE WHEN ? THEN ? ELSE language END,
+             pinned = CASE WHEN ? THEN ? ELSE pinned END,
+             updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          version,
+          Number(input.title !== undefined),
+          input.title?.trim() ?? null,
+          Number(input.language !== undefined),
+          input.language ?? null,
+          Number(input.pinned !== undefined),
+          input.pinned === undefined ? null : Number(input.pinned),
+          timestamp,
+          input.artifactId,
+        );
+    })();
+    await this.appendAuditEvent({
+      projectId: current.artifact.projectId,
+      sessionId: current.artifact.sessionId,
+      type: "artifact.updated",
+      payload: { artifactId: input.artifactId, version, kind: current.artifact.kind },
+    });
+    return this.openArtifact(input.artifactId);
+  }
+
+  async listMemories(filter: MemoryFilter = {}): Promise<MemoryRecord[]> {
+    const clauses = [
+      ...(filter.projectId ? [eq(memoryRecords.projectId, filter.projectId)] : []),
+      ...(filter.scope ? [eq(memoryRecords.scope, filter.scope)] : []),
+      ...(filter.state ? [eq(memoryRecords.state, filter.state)] : []),
+    ];
+    const rows = await this.db
+      .select()
+      .from(memoryRecords)
+      .where(clauses.length ? and(...clauses) : undefined)
+      .orderBy(desc(memoryRecords.updatedAt));
+    const query = filter.query?.trim().toLocaleLowerCase();
+    return rows
+      .filter((row) => !query || row.content.toLocaleLowerCase().includes(query))
+      .map((row) => memoryRecordSchema.parse(row));
+  }
+
+  async saveMemory(input: SaveMemoryInput): Promise<MemoryRecord> {
+    const conversation = await this.getConversation(input.sessionId);
+    if (conversation.projectId !== input.projectId)
+      throw new MaestroError("MEMORY_PROJECT_MISMATCH", "A sessão pertence a outro projeto.");
+    if (input.turnId) {
+      const turn = await this.getTurn(input.turnId);
+      if (turn.conversationId !== input.sessionId)
+        throw new MaestroError("MEMORY_TURN_MISMATCH", "O turno pertence a outra sessão.");
+    }
+    let source: "user" | "assistant" = "assistant";
+    if (input.messageId) {
+      const [message] = await this.db
+        .select()
+        .from(messages)
+        .where(eq(messages.id, input.messageId))
+        .limit(1);
+      if (!message || message.conversationId !== input.sessionId)
+        throw new MaestroError("MEMORY_MESSAGE_MISMATCH", "A mensagem pertence a outra sessão.");
+      source = message.role === "user" ? "user" : "assistant";
+    }
+    const content = input.content.trim();
+    const [duplicate] = await this.db
+      .select()
+      .from(memoryRecords)
+      .where(
+        and(
+          eq(memoryRecords.projectId, input.projectId),
+          eq(memoryRecords.scope, "project"),
+          eq(memoryRecords.content, content),
+          inArray(memoryRecords.state, ["suggested", "accepted"]),
+        ),
+      )
+      .limit(1);
+    if (duplicate) return memoryRecordSchema.parse(duplicate);
+    const timestamp = now();
+    const memory = memoryRecordSchema.parse({
+      id: ulid(),
+      projectId: input.projectId,
+      scope: "project",
+      kind: input.kind ?? "fact",
+      content,
+      provenance: {
+        sessionId: input.sessionId,
+        turnId: input.turnId ?? null,
+        messageId: input.messageId ?? null,
+        source,
+        excerpt: content.slice(0, 2_000),
+      },
+      confidence: 1,
+      state: "accepted",
+      expiresAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await this.db.insert(memoryRecords).values(memory);
+    await this.appendAuditEvent({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      type: "memory.changed",
+      payload: { memoryId: memory.id, action: "accepted", scope: "project" },
+    });
+    return memory;
+  }
+
+  async suggestMemoriesFromMessage(
+    message: Message,
+    turnId: string | null = null,
+    scope: "project" | "personal" = "project",
+  ): Promise<MemoryRecord[]> {
+    if (message.role !== "user" || message.status !== "completed") return [];
+    const conversation = await this.getConversation(message.conversationId);
+    const candidates = extractMemoryCandidates(message.content);
+    const created: MemoryRecord[] = [];
+    for (const candidate of candidates) {
+      const duplicate = this.sqlite
+        .prepare(
+          `SELECT id FROM memory_records
+           WHERE scope = ? AND project_id IS ? AND lower(content) = lower(?)
+             AND state IN ('suggested', 'accepted') LIMIT 1`,
+        )
+        .get(scope, scope === "project" ? conversation.projectId : null, candidate.content);
+      if (duplicate) continue;
+      const timestamp = now();
+      const memory = memoryRecordSchema.parse({
+        id: ulid(),
+        projectId: scope === "project" ? conversation.projectId : null,
+        scope,
+        kind: candidate.kind,
+        content: candidate.content,
+        provenance: {
+          sessionId: conversation.id,
+          turnId,
+          messageId: message.id,
+          source: "user",
+          excerpt: candidate.evidence,
+        },
+        confidence: candidate.confidence,
+        state: "suggested",
+        expiresAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await this.db.insert(memoryRecords).values(memory);
+      await this.appendAuditEvent({
+        projectId: conversation.projectId,
+        sessionId: conversation.id,
+        type: "memory.changed",
+        payload: { memoryId: memory.id, action: "suggested", scope },
+      });
+      created.push(memory);
+    }
+    return created;
+  }
+
+  async updateMemory(
+    input: UpdateMemoryInput & { state?: MemoryRecord["state"] },
+  ): Promise<MemoryRecord> {
+    const [current] = await this.db
+      .select()
+      .from(memoryRecords)
+      .where(eq(memoryRecords.id, input.memoryId))
+      .limit(1);
+    if (!current) throw new MaestroError("MEMORY_NOT_FOUND", "Memória não encontrada.");
+    await this.db
+      .update(memoryRecords)
+      .set({
+        ...(input.content === undefined ? {} : { content: input.content.trim() }),
+        ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
+        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+        ...(input.state === undefined ? {} : { state: input.state }),
+        updatedAt: now(),
+      })
+      .where(eq(memoryRecords.id, input.memoryId));
+    const [updated] = await this.db
+      .select()
+      .from(memoryRecords)
+      .where(eq(memoryRecords.id, input.memoryId))
+      .limit(1);
+    const parsed = memoryRecordSchema.parse(updated);
+    await this.appendAuditEvent({
+      projectId: parsed.projectId,
+      sessionId: parsed.provenance.sessionId,
+      type: "memory.changed",
+      payload: {
+        memoryId: parsed.id,
+        action:
+          parsed.state === "accepted"
+            ? "accepted"
+            : parsed.state === "forgotten"
+              ? "forgotten"
+              : "updated",
+        scope: parsed.scope,
+      },
+    });
+    return parsed;
+  }
+
+  async listConnectors(projectId: string): Promise<Connector[]> {
+    await this.getProject(projectId);
+    const rows = await this.db
+      .select()
+      .from(connectors)
+      .where(eq(connectors.projectId, projectId))
+      .orderBy(asc(connectors.name));
+    return rows.map((row) => connectorSchema.parse(row));
+  }
+
+  async configureConnector(input: {
+    projectId: string;
+    connectorId?: string;
+    name: string;
+    kind: Connector["kind"];
+    enabled: boolean;
+    config: Record<string, unknown>;
+  }): Promise<Connector> {
+    await this.getProject(input.projectId);
+    if (configContainsSecret(input.config))
+      throw new MaestroError(
+        "CONNECTOR_SECRET_FORBIDDEN",
+        "Segredos devem ser guardados no vault, nunca na configuração do conector.",
+      );
+    const timestamp = now();
+    const id = input.connectorId ?? ulid();
+    await this.db
+      .insert(connectors)
+      .values({
+        id,
+        projectId: input.projectId,
+        name: input.name.trim(),
+        kind: input.kind,
+        enabled: input.enabled,
+        config: input.config,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })
+      .onConflictDoUpdate({
+        target: connectors.id,
+        set: {
+          name: input.name.trim(),
+          kind: input.kind,
+          enabled: input.enabled,
+          config: input.config,
+          updatedAt: timestamp,
+        },
+      });
+    const [row] = await this.db.select().from(connectors).where(eq(connectors.id, id)).limit(1);
+    const parsed = connectorSchema.parse(row);
+    await this.appendAuditEvent({
+      projectId: parsed.projectId,
+      type: "connector.configured",
+      payload: { connectorId: parsed.id, kind: parsed.kind, enabled: parsed.enabled },
+    });
+    return parsed;
+  }
+
+  async grantConnector(input: {
+    connectorId: string;
+    capability: ConnectorGrant["capability"];
+    scope?: Record<string, unknown>;
+    expiresAt?: string | null;
+  }): Promise<ConnectorGrant> {
+    const [connector] = await this.db
+      .select()
+      .from(connectors)
+      .where(eq(connectors.id, input.connectorId))
+      .limit(1);
+    if (!connector) throw new MaestroError("CONNECTOR_NOT_FOUND", "Conector não encontrado.");
+    const timestamp = now();
+    const grant = connectorGrantSchema.parse({
+      id: ulid(),
+      connectorId: input.connectorId,
+      capability: input.capability,
+      scope: input.scope ?? {},
+      granted: true,
+      expiresAt: input.expiresAt ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await this.db.insert(connectorGrants).values(grant);
+    await this.appendAuditEvent({
+      projectId: connector.projectId,
+      type: "authorization.changed",
+      payload: { subject: "connector_grant", grantId: grant.id, action: "granted" },
+    });
+    return grant;
+  }
+
+  async revokeConnector(connectorId: string, grantId: string): Promise<ConnectorGrant> {
+    const [grant] = await this.db
+      .select()
+      .from(connectorGrants)
+      .where(and(eq(connectorGrants.id, grantId), eq(connectorGrants.connectorId, connectorId)))
+      .limit(1);
+    if (!grant) throw new MaestroError("CONNECTOR_GRANT_NOT_FOUND", "Grant não encontrado.");
+    await this.db
+      .update(connectorGrants)
+      .set({ granted: false, updatedAt: now() })
+      .where(eq(connectorGrants.id, grantId));
+    const [updated] = await this.db
+      .select()
+      .from(connectorGrants)
+      .where(eq(connectorGrants.id, grantId))
+      .limit(1);
+    const parsed = connectorGrantSchema.parse(updated);
+    const [connector] = await this.db
+      .select()
+      .from(connectors)
+      .where(eq(connectors.id, connectorId))
+      .limit(1);
+    await this.appendAuditEvent({
+      projectId: connector?.projectId ?? null,
+      type: "authorization.changed",
+      payload: { subject: "connector_grant", grantId: parsed.id, action: "revoked" },
+    });
+    return parsed;
+  }
+
+  async listConnectorGrants(connectorId: string): Promise<ConnectorGrant[]> {
+    const rows = await this.db
+      .select()
+      .from(connectorGrants)
+      .where(eq(connectorGrants.connectorId, connectorId))
+      .orderBy(desc(connectorGrants.updatedAt));
+    return rows.map((row) => connectorGrantSchema.parse(row));
+  }
+
+  async startConnectorInvocation(input: {
+    connectorId: string;
+    runId?: string | null;
+    turnId?: string | null;
+    operation: string;
+    mutability: ConnectorInvocation["mutability"];
+    inputSummary: string;
+    status?: ConnectorInvocation["status"];
+  }): Promise<ConnectorInvocation> {
+    const [connector] = await this.db
+      .select()
+      .from(connectors)
+      .where(eq(connectors.id, input.connectorId))
+      .limit(1);
+    if (!connector) throw new MaestroError("CONNECTOR_NOT_FOUND", "Conector não encontrado.");
+    const invocation = connectorInvocationSchema.parse({
+      id: ulid(),
+      connectorId: input.connectorId,
+      runId: input.runId ?? null,
+      turnId: input.turnId ?? null,
+      operation: input.operation,
+      mutability: input.mutability,
+      status: input.status ?? "running",
+      inputSummary: input.inputSummary,
+      outputSummary: null,
+      error: null,
+      startedAt: now(),
+      finishedAt: input.status === "denied" ? now() : null,
+    });
+    await this.db.insert(connectorInvocations).values(invocation);
+    return invocation;
+  }
+
+  async finishConnectorInvocation(
+    invocationId: string,
+    input: {
+      status: "completed" | "failed" | "denied";
+      outputSummary?: string | null;
+      error?: string | null;
+    },
+  ): Promise<ConnectorInvocation> {
+    await this.db
+      .update(connectorInvocations)
+      .set({
+        status: input.status,
+        outputSummary: input.outputSummary ?? null,
+        error: input.error ?? null,
+        finishedAt: now(),
+      })
+      .where(eq(connectorInvocations.id, invocationId));
+    const [row] = await this.db
+      .select()
+      .from(connectorInvocations)
+      .where(eq(connectorInvocations.id, invocationId))
+      .limit(1);
+    if (!row) throw new MaestroError("CONNECTOR_INVOCATION_NOT_FOUND", "Invocação não encontrada.");
+    const invocation = connectorInvocationSchema.parse(row);
+    const [connector] = await this.db
+      .select()
+      .from(connectors)
+      .where(eq(connectors.id, invocation.connectorId))
+      .limit(1);
+    await this.appendAuditEvent({
+      projectId: connector?.projectId ?? null,
+      runId: invocation.runId,
+      type: "connector.invoked",
+      payload: {
+        connectorId: invocation.connectorId,
+        invocationId: invocation.id,
+        operation: invocation.operation,
+        mutability: invocation.mutability,
+        status: invocation.status,
+      },
+    });
+    return invocation;
+  }
+
+  async listConnectorInvocations(connectorId: string): Promise<ConnectorInvocation[]> {
+    const rows = await this.db
+      .select()
+      .from(connectorInvocations)
+      .where(eq(connectorInvocations.connectorId, connectorId))
+      .orderBy(desc(connectorInvocations.startedAt));
+    return rows.map((row) => connectorInvocationSchema.parse(row));
+  }
+
+  async getProjectAutonomy(projectId: string): Promise<AutonomyProfile> {
+    const project = await this.getProject(projectId);
+    const [existing] = await this.db
+      .select()
+      .from(autonomyProfiles)
+      .where(eq(autonomyProfiles.projectId, projectId))
+      .limit(1);
+    if (existing) return autonomyProfileSchema.parse(existing);
+    const value = autonomyProfileSchema.parse({
+      projectId,
+      level: "review",
+      allowedPaths: project.roots.map((root) => root.canonicalPath),
+      allowedTools: [],
+      allowedCommands: [],
+      network: "denied",
+      maxCostUsd: null,
+      maxTokens: null,
+      updatedAt: now(),
+    });
+    await this.db.insert(autonomyProfiles).values(value);
+    return value;
+  }
+
+  async setProjectAutonomy(projectId: string, level: AutonomyLevel): Promise<AutonomyProfile> {
+    const current = await this.getProjectAutonomy(projectId);
+    const project = await this.getProject(projectId);
+    const updated = autonomyProfileSchema.parse({
+      ...current,
+      level,
+      allowedPaths:
+        current.allowedPaths.length > 0
+          ? current.allowedPaths
+          : project.roots.map((root) => root.canonicalPath),
+      allowedTools:
+        level === "autopilot" && current.allowedTools.length === 0
+          ? ["fs.read", "fs.glob", "search.grep", "lsp.query", "fs.edit", "fs.write"]
+          : current.allowedTools,
+      updatedAt: now(),
+    });
+    await this.db
+      .insert(autonomyProfiles)
+      .values(updated)
+      .onConflictDoUpdate({ target: autonomyProfiles.projectId, set: updated });
+    await this.appendAuditEvent({
+      projectId,
+      type: "authorization.changed",
+      payload: { subject: "project_autonomy", action: "updated", level },
+    });
+    return updated;
+  }
+
+  async listJobs(projectId: string, activeOnly = false): Promise<BackgroundJob[]> {
+    const rows = await this.db
+      .select()
+      .from(backgroundJobs)
+      .where(
+        activeOnly
+          ? and(
+              eq(backgroundJobs.projectId, projectId),
+              inArray(backgroundJobs.state, ["queued", "running", "blocked"]),
+            )
+          : eq(backgroundJobs.projectId, projectId),
+      )
+      .orderBy(desc(backgroundJobs.updatedAt));
+    return rows.map((row) => backgroundJobSchema.parse(row));
+  }
+
+  async getJob(jobId: string): Promise<BackgroundJob> {
+    const [row] = await this.db
+      .select()
+      .from(backgroundJobs)
+      .where(eq(backgroundJobs.id, jobId))
+      .limit(1);
+    if (!row) throw new MaestroError("JOB_NOT_FOUND", "Trabalho em background não encontrado.");
+    return backgroundJobSchema.parse(row);
+  }
+
+  async updateJob(
+    jobId: string,
+    values: Partial<Pick<BackgroundJob, "state" | "progress" | "detail">>,
+  ): Promise<BackgroundJob> {
+    const current = await this.getJob(jobId);
+    const terminal =
+      values.state === "completed" || values.state === "failed" || values.state === "canceled";
+    await this.db
+      .update(backgroundJobs)
+      .set({ ...values, updatedAt: now(), ...(terminal ? { finishedAt: now() } : {}) })
+      .where(eq(backgroundJobs.id, current.id));
+    return this.getJob(jobId);
+  }
+
+  globalSearch(projectId: string, query: string, limit = 30): Promise<GlobalSearchResult[]> {
+    const tokens = query
+      .normalize("NFKC")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 12)
+      .map((token) => `"${token.replaceAll('"', '""')}"`);
+    if (tokens.length === 0) return Promise.resolve([]);
+    const match = tokens.join(" AND ");
+    const rows = this.sqlite
+      .prepare(
+        `SELECT entity_type AS type, entity_id AS id, project_id AS projectId,
+                NULLIF(session_id, '') AS sessionId, title,
+                snippet(global_search_fts, 5, '<mark>', '</mark>', '…', 20) AS excerpt,
+                bm25(global_search_fts, 4.0, 1.0) AS rank
+         FROM global_search_fts
+         WHERE global_search_fts MATCH ? AND project_id = ?
+         ORDER BY rank ASC LIMIT ?`,
+      )
+      .all(match, projectId, Math.max(1, Math.min(limit, 100))) as Array<{
+      type: GlobalSearchResult["type"];
+      id: string;
+      projectId: string;
+      sessionId: string | null;
+      title: string;
+      excerpt: string;
+      rank: number;
+    }>;
+    const timestamp = now();
+    return Promise.resolve(
+      rows.map((row) => ({
+        id: row.id,
+        projectId: row.projectId,
+        type: row.type,
+        title: row.title,
+        excerpt: row.excerpt,
+        sessionId: row.sessionId,
+        score: Math.max(0, -row.rank),
+        updatedAt: timestamp,
+      })),
+    );
   }
 
   async getSettings(): Promise<AppSettings> {

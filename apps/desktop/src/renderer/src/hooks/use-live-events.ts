@@ -37,8 +37,10 @@ export function useLiveEvents(): void {
             return { ...current, messages };
           },
         );
-        if (event.type === "message.completed")
+        if (event.type === "message.completed") {
           void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+          void queryClient.invalidateQueries({ queryKey: ["timeline"] });
+        }
       }
 
       if (
@@ -61,7 +63,10 @@ export function useLiveEvents(): void {
         void queryClient.invalidateQueries({ queryKey: ["run", event.runId] });
         void queryClient.invalidateQueries({ queryKey: ["run-events", event.runId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+        void queryClient.invalidateQueries({ queryKey: ["timeline"] });
         void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+        if (event.type === "run.state" && event.data.to === "completed")
+          void queryClient.invalidateQueries({ queryKey: ["memories"] });
       }
     });
   }, [pushEvent, queryClient]);

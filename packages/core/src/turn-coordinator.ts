@@ -136,6 +136,69 @@ export function classifyTurnIntent(prompt: string, context: TurnClassificationCo
   };
 }
 
+/** Applies an explicit strategy without weakening the approval boundary for execution. */
+export function overrideTurnStrategy(
+  intent: TurnIntent,
+  path: TurnIntent["path"],
+  context: TurnClassificationContext,
+): TurnIntent {
+  if (path === intent.path) return intent;
+  if (path === "execute" && !context.approvedPlanVersion)
+    return {
+      ...intent,
+      path: "plan",
+      category: "change_request",
+      confidence: 1,
+      rationale:
+        "O usuário pediu execução, mas ainda não existe um plano aprovado; o limite de segurança preserva a etapa de revisão.",
+      requiresWorkspace: context.hasWorkspace,
+      requiresApproval: true,
+      requestedCapabilities: ["workspace-read", "planning", "workspace-write"],
+    };
+  if (path === "answer")
+    return {
+      ...intent,
+      path,
+      confidence: 1,
+      rationale: "Estratégia answer selecionada explicitamente pelo usuário.",
+      requiresWorkspace: false,
+      requiresApproval: false,
+      requestedCapabilities: ["chat"],
+    };
+  if (path === "research")
+    return {
+      ...intent,
+      path,
+      confidence: 1,
+      rationale: "Estratégia research selecionada explicitamente pelo usuário.",
+      requiresWorkspace: context.hasWorkspace,
+      requiresApproval: false,
+      requestedCapabilities: context.hasWorkspace
+        ? ["workspace-read", "search"]
+        : ["search", "network"],
+    };
+  if (path === "plan")
+    return {
+      ...intent,
+      path,
+      category: "change_request",
+      confidence: 1,
+      rationale: "Estratégia plan selecionada explicitamente pelo usuário.",
+      requiresWorkspace: context.hasWorkspace,
+      requiresApproval: true,
+      requestedCapabilities: ["workspace-read", "planning"],
+    };
+  return {
+    ...intent,
+    path,
+    confidence: 1,
+    rationale: "Execução explícita de um plano previamente aprovado.",
+    requiresWorkspace: true,
+    requiresApproval: false,
+    requestedCapabilities: ["workspace-write", "commands"],
+  };
+}
+
 export function executionPolicyHash(
   value: Omit<ExecutionPolicy, "scopeHash"> | ExecutionPolicy,
 ): string {
